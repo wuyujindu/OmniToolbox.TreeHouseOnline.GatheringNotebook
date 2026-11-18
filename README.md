@@ -46,6 +46,15 @@ Omni 读取默认分支根目录的 `TreeHouseModules.json`，下载并校验模
 
 导出的剪贴板内容是 GBR 自己的格式：`Base64(GZip(0x06 + JSON))`，其中 JSON 字段与 `auto_gather_lists.json` 一致（`ItemIds` / `Quantities` / `PrefferedLocations` / `EnabledItems` / `Name` / `Description` / `FolderPath` / `Order` / `Enabled` / `Fallback` / `RemoveCompletedItems`）。自测会用同样的解码流程校验，并且已在 7.5.0.3 上用 GBR 的 `Config.FromBase64` 实测可以解析。
 
+### 生成琉璃（Ruri）订单
+
+选中未采集物后有两个按钮：
+
+- **生成 Ruri 订单**：生成 Ruri 订单 JSON（每项 `ItemId` + `Quantity=1` + `SourceIntent="Gather"` + `SkipIfEnough=false`），复制到剪贴板，打开 Ruri 主窗口（`/ruri`），再执行 `/ruri dryrun <json>` 让 Ruri 做计划检查 —— 只出方案，不会开始采集。
+- **Ruri 立即采集**：同样生成订单并打开 Ruri，但执行 `/ruri run <json>`，Ruri 会直接开始按订单采集。
+
+Ruri 没有订单相关的 IPC，这里走的是它的命令接口（`/ruri`、`/ruri dryrun`、`/ruri run`）。生成的 JSON 已用 Ruri 自带的 `OrderImporter.ImportFromJson` 实测可以解析，`SourceIntent` 会正确识别为 `Gather`。需要 Ruri 插件已启用且许可证有效，否则命令会被拒绝（模块会在聊天框提示）。
+
 当前国服数据下：采矿 **517 条**、园艺 **631 条**（都计入采集笔记成就，全部可导出给 GBR），收藏品各 140 条，特殊分类 29 项。由于完成状态来自游戏内存，只有在游戏内登录角色后才会显示真实进度。
 
 ## 模块组织与维护

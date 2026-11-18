@@ -66,6 +66,13 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["SelectedCount"] = "已选 {0} 项",
             ["ExportPresets"] = "导出 GBR 预设",
             ["ExportPresetsHelp"] = "把选中的未采集物按每 100 项生成 GatherBuddy Reborn 自动采集预设, 逐个复制后在 GBR 里从剪贴板导入",
+            ["RuriOrder"] = "生成 Ruri 订单",
+            ["RuriOrderHelp"] = "把选中的未采集物生成 Ruri 订单, 打开 Ruri 并做计划检查 (不会开始执行)",
+            ["RuriStart"] = "Ruri 立即采集",
+            ["RuriStartHelp"] = "把选中的未采集物生成 Ruri 订单, 打开 Ruri 并直接开始采集",
+            ["RuriSent"] = "已向 Ruri 发送 {0} 个订单",
+            ["RuriPlanSent"] = "已向 Ruri 发送 {0} 个订单并开始计划检查",
+            ["RuriFailed"] = "无法调用 Ruri: 命令 /ruri 不可用, 请确认琉璃的宝石插件已启用",
             ["PresetDialogTitle"] = "GBR 自动采集预设",
             ["PresetDialogHint"] = "在 GatherBuddy Reborn 的自动采集列表里点「从剪贴板导入」, 一次粘贴一个预设; 每个预设最多 100 项。",
             ["PresetName"] = "{0} 未采集 {1}",
@@ -177,7 +184,80 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         OmniControls.HelpTooltip(Text("ExportPresetsHelp"));
+
+        ImGui.SameLine(0f, OmniTheme.Scale(12f));
+        using (ImRaii.Disabled(selected == 0))
+        {
+            if (OmniControls.SmallButton(Text("RuriOrder") + "##gatheringNotebookRuriOrder", false))
+            {
+                SendRuriOrders(false);
+            }
+        }
+
+        OmniControls.HelpTooltip(Text("RuriOrderHelp"));
+
+        ImGui.SameLine(0f, OmniTheme.Scale(6f));
+        using (ImRaii.Disabled(selected == 0))
+        {
+            if (OmniControls.SmallButton(Text("RuriStart") + "##gatheringNotebookRuriStart", false))
+            {
+                SendRuriOrders(true);
+            }
+        }
+
+        OmniControls.HelpTooltip(Text("RuriStartHelp"));
         return changed;
+    }
+
+    private void SendRuriOrders(bool start)
+    {
+        if (catalog == null)
+        {
+            return;
+        }
+
+        var entries = catalog.Mining.Concat(catalog.Botany).ToList();
+        var json = BuildRuriOrderJson(entries);
+        if (json.Length == 0)
+        {
+            return;
+        }
+
+        ImGui.SetClipboardText(json);
+
+        var commandManager = DalamudServices.CommandManager;
+        if (!commandManager.ProcessCommand("/ruri"))
+        {
+            DalamudServices.ChatGUI.Print(Text("RuriFailed"));
+            return;
+        }
+
+        var count = entries.Where(entry => entry.Selected).Select(entry => entry.ItemId).Distinct().Count();
+        if (commandManager.ProcessCommand((start ? "/ruri run " : "/ruri dryrun ") + json))
+        {
+            DalamudServices.ChatGUI.Print(Text(start ? "RuriSent" : "RuriPlanSent", count));
+        }
+        else
+        {
+            DalamudServices.ChatGUI.Print(Text("RuriFailed"));
+        }
+    }
+
+    internal static string BuildRuriOrderJson(IEnumerable<GatheringEntry> entries)
+    {
+        var orders = new List<RuriOrderJson>();
+        var seen = new HashSet<uint>();
+        foreach (var entry in entries)
+        {
+            if (!entry.Selected || !seen.Add(entry.ItemId))
+            {
+                continue;
+            }
+
+            orders.Add(new RuriOrderJson { ItemId = entry.ItemId });
+        }
+
+        return orders.Count == 0 ? string.Empty : JsonSerializer.Serialize(orders);
     }
 
     private int CountSelected()
@@ -1120,6 +1200,14 @@ internal sealed class GbrPreset(string name, string description, List<uint> item
     public string Description { get; } = description;
     public List<uint> ItemIds { get; } = itemIds;
     public string Base64 { get; } = base64;
+}
+
+internal sealed class RuriOrderJson
+{
+    public uint ItemId { get; set; }
+    public int Quantity { get; set; } = 1;
+    public string SourceIntent { get; set; } = "Gather";
+    public bool SkipIfEnough { get; set; }
 }
 
 internal sealed class GbrPresetPayload

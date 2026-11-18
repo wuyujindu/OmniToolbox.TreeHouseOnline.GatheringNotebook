@@ -157,6 +157,28 @@ internal static class Checks
             Expect(!root.GetProperty("Enabled").GetBoolean() && !root.GetProperty("Fallback").GetBoolean());
         });
 
+        Check("Ruri order json", () =>
+        {
+            var entries = new[]
+            {
+                new GatheringEntry { ItemId = 5509, Selected = true },
+                new GatheringEntry { ItemId = 5509, Selected = true },
+                new GatheringEntry { ItemId = 5380, Selected = false },
+                new GatheringEntry { ItemId = 7777, Selected = true }
+            };
+
+            var json = GatheringNotebook.BuildRuriOrderJson(entries);
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            Expect(root.GetArrayLength() == 2);
+            Expect(root[0].GetProperty("ItemId").GetUInt32() == 5509);
+            Expect(root[0].GetProperty("Quantity").GetInt32() == 1);
+            Expect(root[0].GetProperty("SourceIntent").GetString() == "Gather");
+            Expect(!root[0].GetProperty("SkipIfEnough").GetBoolean());
+            Expect(root[1].GetProperty("ItemId").GetUInt32() == 7777);
+            Expect(GatheringNotebook.BuildRuriOrderJson(Array.Empty<GatheringEntry>()) == string.Empty);
+        });
+
         Console.WriteLine($"PASS {passed} test groups against real Omni API 1 dependencies.");
         return Task.CompletedTask;
     }
