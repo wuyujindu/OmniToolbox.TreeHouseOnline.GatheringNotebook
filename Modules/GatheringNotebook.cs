@@ -87,6 +87,8 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["RuriPlanSent"] = "已向 Ruri 发送 {0} 个订单并开始计划检查",
             ["RuriSkipped"] = "已跳过 {0} 个 Ruri 不支持的物品（水晶 / 任务专用）",
             ["RuriNoGatherable"] = "选中的物品里没有 Ruri 可采集的项目",
+            ["RuriSendableHint"] = "Ruri 可发送 {0} 个, 自动跳过 {1} 个",
+            ["RuriUnsupportedTag"] = "Ruri 跳过",
             ["RuriFailed"] = "无法调用 Ruri: 命令 /ruri 不可用, 请确认琉璃的宝石插件已启用",
             ["PresetDialogTitle"] = "GBR 自动采集预设",
             ["PresetDialogHint"] = "在 GatherBuddy Reborn 的自动采集列表里点「从剪贴板导入」, 一次粘贴一个预设; 每个预设最多 100 项。",
@@ -311,7 +313,9 @@ public sealed class GatheringNotebook : OmniModuleBase
     }
 
     // Ruri 的采集数据不包含水晶类，任务专用物品也没有常规采集点，整批订单会因一个不支持项失败。
-    private static bool CanSendToRuri(GatheringEntry entry) => entry.Selected && entry.HasWorldNode && !entry.IsCrystal;
+    internal static bool IsRuriGatherable(GatheringEntry entry) => entry.HasWorldNode && !entry.IsCrystal;
+
+    private static bool CanSendToRuri(GatheringEntry entry) => entry.Selected && IsRuriGatherable(entry);
 
     private int CountSelected()
     {
@@ -747,6 +751,15 @@ public sealed class GatheringNotebook : OmniModuleBase
             .ToList();
 
         DrawCenteredText($"{Text("SelectedSection")} ({selected.Count})");
+        var sendable = selected.Count(IsRuriGatherable);
+        if (sendable < selected.Count)
+        {
+            using (ImRaii.PushColor(ImGuiCol.Text, RuriWarningColor, true))
+            {
+                DrawCenteredText(Text("RuriSendableHint", sendable, selected.Count - sendable));
+            }
+        }
+
         using (ImRaii.Disabled(selected.Count == 0))
         {
             if (OmniControls.SmallButton(Text("ClearSelection") + "##gatheringNotebookClearSelected", false))
@@ -768,7 +781,15 @@ public sealed class GatheringNotebook : OmniModuleBase
             ImGui.PushID((int)entry.ItemId);
             var remove = OmniControls.SmallButton("×##removeSelected", false);
             ImGui.SameLine(0f, OmniTheme.Scale(6f));
-            ImGui.TextUnformatted($"{entry.Name} ({entry.Level})");
+            if (IsRuriGatherable(entry))
+            {
+                ImGui.TextUnformatted($"{entry.Name} ({entry.Level})");
+            }
+            else
+            {
+                ImGui.TextColored(RuriWarningColor, $"{entry.Name} ({entry.Level}) · {Text("RuriUnsupportedTag")}");
+            }
+
             if (remove)
             {
                 ClearSelection(entry.ItemId);
@@ -777,6 +798,8 @@ public sealed class GatheringNotebook : OmniModuleBase
             ImGui.PopID();
         }
     }
+
+    private static readonly Vector4 RuriWarningColor = new(0.95f, 0.72f, 0.35f, 1f);
 
     private void ClearAllSelection()
     {

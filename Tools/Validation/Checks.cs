@@ -189,6 +189,9 @@ internal static class Checks
             Expect(!root[0].GetProperty("SkipIfEnough").GetBoolean());
             Expect(root[1].GetProperty("ItemId").GetUInt32() == 7777);
             Expect(GatheringNotebook.CountRuriOrders(entries) == 2);
+            Expect(GatheringNotebook.IsRuriGatherable(entries[0]));
+            Expect(!GatheringNotebook.IsRuriGatherable(entries[4]));
+            Expect(!GatheringNotebook.IsRuriGatherable(entries[5]));
             Expect(GatheringNotebook.BuildRuriOrderJson(Array.Empty<GatheringEntry>()) == string.Empty);
         });
 
