@@ -449,19 +449,15 @@ public sealed class GatheringNotebook : OmniModuleBase
                 .ToList();
             var allSelected = candidates.Count > 0 && candidates.All(entry => entry.Selected);
 
-            ImGui.SameLine(ImGui.GetContentRegionMax().X - ImGui.GetFrameHeight());
-            using (ImRaii.PushStyle(ImGuiStyleVar.FramePadding, new Vector2(OmniTheme.Scale(1f), OmniTheme.Scale(1f))))
+            var checkboxSize = OmniTheme.Scale(14f);
+            ImGui.SameLine(ImGui.GetContentRegionMax().X - checkboxSize - OmniTheme.Scale(2f));
+            ImGui.SetCursorPosX(ImGui.GetContentRegionMax().X - checkboxSize - OmniTheme.Scale(2f));
+            ImGui.SetCursorPosY(ImGui.GetCursorPosY() + OmniTheme.Scale(3f));
+            using (ImRaii.Disabled(candidates.Count == 0))
             {
-                var checkboxSize = ImGui.GetFrameHeight();
-                ImGui.SetCursorPosX(ImGui.GetContentRegionMax().X - checkboxSize);
-                ImGui.SetCursorPosY(ImGui.GetCursorPosY() + OmniTheme.Scale(3f));
-                using (ImRaii.Disabled(candidates.Count == 0))
+                if (DrawSmallCheckbox("##selectSection" + id, allSelected, checkboxSize))
                 {
-                    var selected = allSelected;
-                    if (ImGui.Checkbox("##selectSection" + id, ref selected))
-                    {
-                        SelectSection(entries, special, selected);
-                    }
+                    SelectSection(entries, special, !allSelected);
                 }
             }
 
@@ -738,6 +734,51 @@ public sealed class GatheringNotebook : OmniModuleBase
                 entry.Selected = false;
             }
         }
+    }
+
+    private static bool DrawSmallCheckbox(string id, bool value, float size)
+    {
+        var position = ImGui.GetCursorScreenPos();
+        var clicked = ImGui.InvisibleButton(id, new Vector2(size, size));
+        var hovered = ImGui.IsItemHovered();
+        var drawList = ImGui.GetWindowDrawList();
+        var rounding = size * 0.28f;
+        var accent = OmniTheme.ControlAccent;
+
+        if (value)
+        {
+            drawList.AddRectFilled(position, position + new Vector2(size, size), ImGui.ColorConvertFloat4ToU32(accent), rounding);
+            var thickness = MathF.Max(1.2f, size * 0.14f);
+            drawList.AddLine(
+                position + new Vector2(size * 0.24f, size * 0.52f),
+                position + new Vector2(size * 0.43f, size * 0.72f),
+                0xFFFFFFFF,
+                thickness);
+            drawList.AddLine(
+                position + new Vector2(size * 0.43f, size * 0.72f),
+                position + new Vector2(size * 0.78f, size * 0.30f),
+                0xFFFFFFFF,
+                thickness);
+        }
+        else
+        {
+            var frame = ImGui.GetStyle().Colors[(int)ImGuiCol.FrameBg];
+            drawList.AddRectFilled(
+                position,
+                position + new Vector2(size, size),
+                ImGui.ColorConvertFloat4ToU32(new Vector4(frame.X, frame.Y, frame.Z, 0.55f)),
+                rounding);
+            var border = hovered ? accent : new Vector4(0.55f, 0.58f, 0.5f, 0.8f);
+            drawList.AddRect(
+                position,
+                position + new Vector2(size, size),
+                ImGui.ColorConvertFloat4ToU32(border),
+                rounding,
+                ImDrawFlags.None,
+                MathF.Max(1f, size * 0.08f));
+        }
+
+        return clicked;
     }
 
     private static void DrawCenteredText(string text)
