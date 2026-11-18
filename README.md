@@ -36,15 +36,16 @@ Omni 读取默认分支根目录的 `TreeHouseModules.json`，下载并校验模
 
 ### 导出 GatherBuddy Reborn 自动采集预设
 
-列表每行都有勾选框，列表上方有「全选」「清除选择」（作用于当前等级/分类下的筛选结果）。选好未采集物后点「导出 GBR 预设」：
+列表每行都有勾选框，列表上方有「全选」「清除选择」（作用于当前等级/分类下的筛选结果）。选好未采集物后：
 
-- 按分支（采矿 / 园艺）生成预设，**每个预设最多 100 项**，超出自动拆成第 2、3… 组；
-- 列表里都是 GBR 能采集的物品，导出不再跳过任何条目；
-- 同一物品同时属于采矿和园艺时只导出一次，不会在两个预设里重复；
-- 弹窗里逐个点「复制」，然后在 GatherBuddy Reborn 的自动采集列表点「从剪贴板导入」，粘贴即可；
-- 预设名形如 `采矿 未采集 1`，数量全部为 1、全部启用、不勾选 Fallback。
+- **导出 GBR 预设**：按分支（采矿 / 园艺）生成预设，**每个预设最多 100 项**（超出自动拆成第 2、3… 组），
+  **直接写入 GBR 的 `auto_gather_lists.json`**。GBR 的列表管理器监听这个文件，写完后会自动重新加载；
+  同名预设会被覆盖，预设名形如 `采矿 未采集 1`，数量全部为 1、全部启用、不勾选 Fallback。
+- **复制预设**：备用方式，弹窗里逐个「复制」，再到 GBR 自动采集列表点「从剪贴板导入」。
 
-导出的剪贴板内容是 GBR 自己的格式：`Base64(GZip(0x06 + JSON))`，其中 JSON 字段与 `auto_gather_lists.json` 一致（`ItemIds` / `Quantities` / `PrefferedLocations` / `EnabledItems` / `Name` / `Description` / `FolderPath` / `Order` / `Enabled` / `Fallback` / `RemoveCompletedItems`）。自测会用同样的解码流程校验，并且已在 7.5.0.3 上用 GBR 的 `Config.FromBase64` 实测可以解析。
+写入位置是 `%APPDATA%\XIVLauncherCN\pluginConfigs\GatherbuddyReborn\auto_gather_lists.json`（由 Omni 的配置目录推算，不写死盘符）。如果 GBR 没有立即刷新列表，重新打开一次它的窗口即可。写文件前会先读现有列表再合并，损坏的 JSON 会被当成空列表重建。
+
+剪贴板方式的内容是 GBR 自己的格式：`Base64(GZip(0x06 + JSON))`，JSON 字段与 `auto_gather_lists.json` 一致（`ItemIds` / `Quantities` / `PrefferedLocations` / `EnabledItems` / `Name` / `Description` / `FolderPath` / `Order` / `Enabled` / `Fallback` / `RemoveCompletedItems`）。自测覆盖了文件合并（新增、同名覆盖、坏 JSON 重建）和 Base64 解码，并且已在 7.5.0.3 上用 GBR 的 `Config.FromBase64` 实测可以解析。
 
 ### 生成琉璃（Ruri）订单
 
