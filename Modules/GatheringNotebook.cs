@@ -1042,44 +1042,112 @@ public sealed class GatheringNotebook : OmniModuleBase
 
     private void DrawPresetPopup()
     {
+        ImGui.SetNextWindowSizeConstraints(
+            new Vector2(OmniTheme.Scale(340f), 0f),
+            new Vector2(OmniTheme.Scale(430f), float.MaxValue));
         using var popup = ImRaii.Popup("##gatheringNotebookPresets");
         if (!popup)
         {
             return;
         }
 
-        ImGui.TextUnformatted(Text("PresetDialogTitle"));
-        ImGui.TextWrapped(Text("PresetDialogHint"));
+        ImGui.SetWindowFontScale(1.2f);
+        DrawCenteredText(Text("PresetDialogTitle"));
+        ImGui.SetWindowFontScale(1f);
+        ImGui.Spacing();
+        DrawCenteredWrappedText(Text("PresetDialogHint"), OmniTheme.Scale(300f));
+        ImGui.Spacing();
         ImGui.Separator();
+        ImGui.Spacing();
+
         if (presets.Count == 0)
         {
-            ImGui.TextUnformatted(Text("NoSelection"));
+            DrawCenteredText(Text("NoSelection"));
         }
 
         for (var index = 0; index < presets.Count; index++)
         {
             var preset = presets[index];
-            ImGui.TextUnformatted(preset.Name);
-            ImGui.SameLine(0f, OmniTheme.Scale(8f));
-            ImGui.TextUnformatted(Text("PresetItemCount", preset.ItemIds.Count));
-            ImGui.SameLine(0f, OmniTheme.Scale(8f));
-            if (OmniControls.SmallButton(Text("Copy") + "##gatheringNotebookCopy" + index, false))
+            var nameText = preset.Name;
+            var countText = Text("PresetItemCount", preset.ItemIds.Count);
+            var copyLabel = Text("Copy");
+            var rowWidth = ImGui.CalcTextSize(nameText).X + OmniTheme.Scale(10f) +
+                           ImGui.CalcTextSize(countText).X + OmniTheme.Scale(12f) +
+                           ImGui.CalcTextSize(copyLabel).X + OmniTheme.Scale(22f);
+            var available = ImGui.GetContentRegionAvail().X;
+            if (rowWidth < available)
+            {
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (available - rowWidth) * 0.5f);
+            }
+
+            ImGui.TextUnformatted(nameText);
+            ImGui.SameLine(0f, OmniTheme.Scale(10f));
+            using (ImRaii.PushColor(ImGuiCol.Text, new Vector4(0.58f, 0.58f, 0.52f, 1f), true))
+            {
+                ImGui.TextUnformatted(countText);
+            }
+
+            ImGui.SameLine(0f, OmniTheme.Scale(12f));
+            if (OmniControls.SmallButton(copyLabel + "##gatheringNotebookCopy" + index, false))
             {
                 ImGui.SetClipboardText(preset.Base64);
                 copiedPreset = preset.Name;
             }
+
+            ImGui.Spacing();
         }
 
         if (copiedPreset.Length > 0)
         {
             ImGui.Spacing();
-            ImGui.TextUnformatted(Text("Copied", copiedPreset));
+            using (ImRaii.PushColor(ImGuiCol.Text, OmniTheme.ControlAccent, true))
+            {
+                DrawCenteredWrappedText(Text("Copied", copiedPreset), OmniTheme.Scale(300f));
+            }
         }
 
         ImGui.Spacing();
-        if (OmniControls.SmallButton(Text("Close") + "##gatheringNotebookClosePresets", false))
+        ImGui.Separator();
+        ImGui.Spacing();
+        var closeLabel = Text("Close");
+        var closeWidth = ImGui.CalcTextSize(closeLabel).X + OmniTheme.Scale(44f);
+        var closeAvailable = ImGui.GetContentRegionAvail().X;
+        if (closeWidth < closeAvailable)
+        {
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (closeAvailable - closeWidth) * 0.5f);
+        }
+
+        if (OmniControls.SmallButton(closeLabel + "##gatheringNotebookClosePresets", false, new Vector2(closeWidth, 0f)))
         {
             ImGui.CloseCurrentPopup();
+        }
+    }
+
+    private static void DrawCenteredWrappedText(string text, float maxWidth)
+    {
+        var line = new StringBuilder();
+        foreach (var character in text)
+        {
+            if (character == '\n')
+            {
+                DrawCenteredText(line.ToString());
+                line.Clear();
+                continue;
+            }
+
+            line.Append(character);
+            if (line.Length > 1 && ImGui.CalcTextSize(line.ToString()).X > maxWidth)
+            {
+                line.Length--;
+                DrawCenteredText(line.ToString());
+                line.Clear();
+                line.Append(character);
+            }
+        }
+
+        if (line.Length > 0)
+        {
+            DrawCenteredText(line.ToString());
         }
     }
 
