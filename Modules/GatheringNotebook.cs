@@ -87,7 +87,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["RuriStart"] = "Ruri 立即采集",
             ["RuriStartHelp"] = "把选中的未采集物生成 Ruri 订单, 打开 Ruri 并直接开始采集",
             ["BatchStart"] = "分段采集",
-            ["BatchStartHelp"] = "按每组 N 件依次发送 Ruri 订单, 组间自动丢弃新采集的物品; 请预留足够背包空位 (收藏品会采集多个并占用额外格子)",
+            ["BatchStartHelp"] = "按每组 N 件依次发送 Ruri 订单, 每组结束后丢弃该组对应的所有采集物; 请预留足够背包空位 (收藏品会采集多个并占用额外格子)",
             ["BatchStop"] = "停止分段",
             ["BatchSizeHelp"] = "每组发送给 Ruri 的订单件数 (1-50)",
             ["BatchNone"] = "没有可分段采集的未采集物品",
@@ -388,26 +388,73 @@ public sealed class GatheringNotebook : OmniModuleBase
                 break;
 
             case BatchPhase.Discard:
-                if (pendingDiscards.Count > 0)
+                // 再等 1 秒，避免 Ruri 还在收尾时被下一次订单打断。
+                if (now - batchPhaseSince < 1000)
                 {
-                    batchDiscardedCount += FlushPendingDiscards();
+                    break;
                 }
 
-                if (pendingDiscards.Count == 0)
+                // 本轮订单结束后，把这一组对应物品的背包格全部丢掉（本轮采集到的都清掉）。
+                batchDiscardedCount += DiscardBatchGroupItems();
+                pendingDiscards.Clear();
+                batchGroupIndex++;
+                if (batchGroupIndex >= batchGroups.Count)
                 {
-                    batchGroupIndex++;
-                    if (batchGroupIndex >= batchGroups.Count)
-                    {
-                        FinishBatch();
-                    }
-                    else
-                    {
-                        SendBatchGroup();
-                    }
+                    FinishBatch();
+                }
+                else
+                {
+                    SendBatchGroup();
                 }
 
                 break;
         }
+    }
+
+    private int DiscardBatchGroupItems()
+    {
+        if (batchGroupIndex >= batchGroups.Count)
+        {
+            return 0;
+        }
+
+        var ids = new HashSet<uint>(batchGroups[batchGroupIndex]);
+        var discarded = 0;
+        unsafe
+        {
+            var manager = InventoryManager.Instance();
+            if (manager == null)
+            {
+                return 0;
+            }
+
+            foreach (var type in new[]
+                     {
+                         InventoryType.Inventory1, InventoryType.Inventory2,
+                         InventoryType.Inventory3, InventoryType.Inventory4
+                     })
+            {
+                var container = manager->GetInventoryContainer(type);
+                if (container == null || container->Items == null)
+                {
+                    continue;
+                }
+
+                for (var index = 0; index < container->Size; index++)
+                {
+                    var item = container->Items + index;
+                    if (item->ItemId == 0 || !ids.Contains(item->ItemId))
+                    {
+                        continue;
+                    }
+
+                    manager->DiscardItem(type, (ushort)index);
+                    discarded++;
+                }
+            }
+        }
+
+        return discarded;
     }
 
     private int CountCollectedInBatchGroup()
