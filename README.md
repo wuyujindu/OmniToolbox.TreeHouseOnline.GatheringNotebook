@@ -62,6 +62,16 @@ Omni 读取默认分支根目录的 `TreeHouseModules.json`，下载并校验模
 
 预设内容是 GBR 自己的格式：`Base64(GZip(0x06 + JSON))`，JSON 字段与 `auto_gather_lists.json` 一致（`ItemIds` / `Quantities` / `PrefferedLocations` / `EnabledItems` / `Name` / `Description` / `FolderPath` / `Order` / `Enabled` / `Fallback` / `RemoveCompletedItems`）。自测覆盖 Base64 解码，并且已在 GBR 7.5.0.3 上用它的 `Config.FromBase64` 实测可以解析。
 
+### 分段采集（分批 Ruri + 组间丢弃）
+
+Ruri 靠背包里物品数量判断采集进度，边采边丢会打断它。所以提供「分段采集」：
+
+- 新增「分段采集」按钮和「每组件数」输入（默认 10，范围 1–50）；
+- 把选中的未采集物按每组 N 件切分，**一组跑完自动发下一组**；
+- **组间才丢弃**：本组物品的采集笔记标记全部变「已采集」、且采集窗口关闭、背包安静 3 秒后，才丢弃这一组新采到的整叠物品，然后发下一组；
+- 只丢新采集的整叠物品，不碰背包里原有的同类物品；
+- 开始时会提示「请预留足够背包空位：收藏品会采集多个并占用额外格子」；
+- 每组有 3 分钟总超时 / 60 秒无进展超时，超时自动停止并提示剩余件数；运行中有「停止分段」按钮。
 ### 生成琉璃（Ruri）订单
 
 选中未采集物后有两个按钮：

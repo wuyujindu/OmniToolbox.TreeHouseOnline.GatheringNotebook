@@ -86,6 +86,19 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["RuriOrderHelp"] = "把选中的未采集物生成 Ruri 订单, 打开 Ruri 并做计划检查 (不会开始执行)",
             ["RuriStart"] = "Ruri 立即采集",
             ["RuriStartHelp"] = "把选中的未采集物生成 Ruri 订单, 打开 Ruri 并直接开始采集",
+            ["BatchStart"] = "分段采集",
+            ["BatchStartHelp"] = "按每组 N 件依次发送 Ruri 订单, 组间自动丢弃新采集的物品; 请预留足够背包空位 (收藏品会采集多个并占用额外格子)",
+            ["BatchStop"] = "停止分段",
+            ["BatchSizeHelp"] = "每组发送给 Ruri 的订单件数 (1-50)",
+            ["BatchNone"] = "没有可分段采集的未采集物品",
+            ["BatchStarted"] = "分段采集开始: {0} 件, 共 {1} 组, 每组 {2} 件",
+            ["BatchBagHint"] = "请预留足够背包空位: 收藏品会采集多个并占用额外格子",
+            ["BatchGroupStarted"] = "第 {0}/{1} 组已发送: {2} 件",
+            ["BatchProgress"] = "第 {0}/{1} 组 · 剩 {2} 件",
+            ["BatchFinished"] = "分段采集完成: {0} 组, 丢弃 {1} 件",
+            ["BatchTimeout"] = "分段采集超时已停止, 本组还剩 {0} 件未采集",
+            ["BatchStopped"] = "分段采集已停止",
+            ["BatchNoGatherable"] = "选中的物品里没有 Ruri 可采集的项目",
             ["RuriSent"] = "已向 Ruri 发送 {0} 个订单",
             ["RuriPlanSent"] = "已向 Ruri 发送 {0} 个订单并开始计划检查",
             ["RuriSkipped"] = "已跳过 {0} 个 Ruri 不支持的物品（水晶 / 任务专用）",
@@ -121,7 +134,25 @@ public sealed class GatheringNotebook : OmniModuleBase
     private string copiedPreset = string.Empty;
     private readonly HashSet<uint> discardableItemIds = [];
     private readonly List<PendingDiscard> pendingDiscards = [];
+    private readonly HashSet<uint> collectedItemIds = [];
+    private readonly List<List<uint>> batchGroups = [];
+    private BatchPhase batchPhase;
+    private int batchGroupIndex;
+    private int batchCollectedInGroup;
+    private int batchDiscardedCount;
+    private long batchPhaseSince;
+    private long batchLastProgress;
+    private long batchLastInventoryChange;
+    private long batchLastCollectedRefresh;
     private IGameGui? gameGui;
+
+    private enum BatchPhase
+    {
+        None,
+        Running,
+        Settling,
+        Discard
+    }
 
     private readonly record struct PendingDiscard(
         GameInventoryType Container,
@@ -146,11 +177,14 @@ public sealed class GatheringNotebook : OmniModuleBase
 
     private void OnInventoryChangedRaw(IReadOnlyCollection<InventoryEventArgs> events)
     {
-        if (!config.AutoDiscardGathered || discardableItemIds.Count == 0 || !DalamudServices.PlayerState.IsLoaded)
+        if ((!config.AutoDiscardGathered && batchPhase == BatchPhase.None) ||
+            discardableItemIds.Count == 0 ||
+            !DalamudServices.PlayerState.IsLoaded)
         {
             return;
         }
 
+        batchLastInventoryChange = Environment.TickCount64;
         foreach (var args in events)
         {
             if (args.Item.ContainerType is not (GameInventoryType.Inventory1 or GameInventoryType.Inventory2 or
@@ -172,13 +206,13 @@ public sealed class GatheringNotebook : OmniModuleBase
                 _ => 0
             };
 
-            // 只丢弃「这一叠全部是刚获得的」物品，避免连带删掉背包里原有的同类物品。
+            // 只记录「这一叠全部是刚获得的」物品，避免连带删掉背包里原有的同类物品。
             if (gained <= 0 || item.Quantity != gained)
             {
                 continue;
             }
 
-            // 先排队，等采集窗口关闭后再丢：立刻丢弃会让 Ruri 的背包计数归零，导致它反复采集/暂停。
+            // 先排队：采集过程中（Ruri 正在按背包数量计数）绝不丢，等分段结束/窗口关闭再处理。
             if (pendingDiscards.Any(pending => pending.Container == item.ContainerType && pending.Slot == item.InventorySlot))
             {
                 continue;
@@ -194,24 +228,35 @@ public sealed class GatheringNotebook : OmniModuleBase
 
     private void OnFrameworkUpdate(IFramework framework)
     {
-        if (pendingDiscards.Count == 0)
+        if (batchPhase != BatchPhase.None)
         {
+            UpdateBatch();
             return;
         }
 
-        if (!config.AutoDiscardGathered)
+        if (pendingDiscards.Count == 0 || !config.AutoDiscardGathered)
         {
-            pendingDiscards.Clear();
+            if (!config.AutoDiscardGathered)
+            {
+                pendingDiscards.Clear();
+            }
+
             return;
         }
 
-        // 采集窗口还开着（Ruri 正在采集/计数）时不丢，等它关掉再说。
+        // 采集窗口还开着（Ruri 正在采集/计数）时不丢。
         if (IsGatheringWindowOpen())
         {
             return;
         }
 
+        FlushPendingDiscards();
+    }
+
+    private int FlushPendingDiscards()
+    {
         var now = Environment.TickCount64;
+        var discarded = 0;
         for (var index = pendingDiscards.Count - 1; index >= 0; index--)
         {
             var pending = pendingDiscards[index];
@@ -227,7 +272,170 @@ public sealed class GatheringNotebook : OmniModuleBase
             }
 
             DiscardItemSlot(pending);
+            discarded++;
         }
+
+        return discarded;
+    }
+
+    private void StartBatchGather()
+    {
+        if (catalog == null)
+        {
+            return;
+        }
+
+        RefreshCollected();
+        var items = catalog.All
+            .Where(entry => entry.Selected && IsRuriGatherable(entry))
+            .GroupBy(entry => entry.ItemId)
+            .Where(group => !group.Any(entry => entry.Collected))
+            .Select(group => group.First())
+            .ToList();
+        if (items.Count == 0)
+        {
+            DalamudServices.ChatGUI.Print(Text("BatchNone"));
+            return;
+        }
+
+        var size = Math.Clamp(config.BatchSize, 1, 50);
+        batchGroups.Clear();
+        for (var index = 0; index < items.Count; index += size)
+        {
+            batchGroups.Add(items.Skip(index).Take(size).Select(entry => entry.ItemId).ToList());
+        }
+
+        batchGroupIndex = 0;
+        batchDiscardedCount = 0;
+        DalamudServices.ChatGUI.Print(Text("BatchStarted", items.Count, batchGroups.Count, size));
+        DalamudServices.ChatGUI.Print(Text("BatchBagHint"));
+        SendBatchGroup();
+    }
+
+    private void SendBatchGroup()
+    {
+        var ids = batchGroups[batchGroupIndex];
+        batchPhase = BatchPhase.Running;
+        batchPhaseSince = Environment.TickCount64;
+        batchLastProgress = batchPhaseSince;
+        batchLastInventoryChange = batchPhaseSince;
+        batchCollectedInGroup = CountCollectedInBatchGroup();
+
+        var json = BuildRuriOrderJsonFromIds(ids);
+        if (json.Length == 0)
+        {
+            StopBatch(Text("BatchNoGatherable"));
+            return;
+        }
+
+        ImGui.SetClipboardText(json);
+        var commandManager = DalamudServices.CommandManager;
+        if (!commandManager.ProcessCommand("/ruri") || !commandManager.ProcessCommand("/ruri run " + json))
+        {
+            StopBatch(Text("RuriFailed"));
+            return;
+        }
+
+        DalamudServices.ChatGUI.Print(Text("BatchGroupStarted", batchGroupIndex + 1, batchGroups.Count, ids.Count));
+    }
+
+    private void UpdateBatch()
+    {
+        var now = Environment.TickCount64;
+        switch (batchPhase)
+        {
+            case BatchPhase.Running:
+                if (now - batchLastCollectedRefresh >= 1000)
+                {
+                    RefreshCollected();
+                    batchLastCollectedRefresh = now;
+                }
+
+                var collected = CountCollectedInBatchGroup();
+                if (collected > batchCollectedInGroup)
+                {
+                    batchCollectedInGroup = collected;
+                    batchLastProgress = now;
+                }
+
+                if (collected >= batchGroups[batchGroupIndex].Count)
+                {
+                    batchPhase = BatchPhase.Settling;
+                    batchPhaseSince = now;
+                }
+                else if (now - batchPhaseSince > 180_000 || now - batchLastProgress > 60_000)
+                {
+                    StopBatch(Text("BatchTimeout", batchGroups[batchGroupIndex].Count - collected));
+                }
+
+                break;
+
+            case BatchPhase.Settling:
+                // 等采集窗口关闭、背包安静下来，确认 Ruri 这一组已经结束。
+                if (IsGatheringWindowOpen() || now - batchLastInventoryChange < 3000)
+                {
+                    if (now - batchPhaseSince > 15_000)
+                    {
+                        batchPhase = BatchPhase.Discard;
+                        batchPhaseSince = now;
+                    }
+
+                    break;
+                }
+
+                batchPhase = BatchPhase.Discard;
+                batchPhaseSince = now;
+                break;
+
+            case BatchPhase.Discard:
+                if (pendingDiscards.Count > 0)
+                {
+                    batchDiscardedCount += FlushPendingDiscards();
+                }
+
+                if (pendingDiscards.Count == 0)
+                {
+                    batchGroupIndex++;
+                    if (batchGroupIndex >= batchGroups.Count)
+                    {
+                        FinishBatch();
+                    }
+                    else
+                    {
+                        SendBatchGroup();
+                    }
+                }
+
+                break;
+        }
+    }
+
+    private int CountCollectedInBatchGroup()
+    {
+        if (batchGroupIndex >= batchGroups.Count)
+        {
+            return 0;
+        }
+
+        return batchGroups[batchGroupIndex].Count(id => collectedItemIds.Contains(id));
+    }
+
+    private void FinishBatch()
+    {
+        DalamudServices.ChatGUI.Print(Text("BatchFinished", batchGroups.Count, batchDiscardedCount));
+        batchPhase = BatchPhase.None;
+        batchGroups.Clear();
+        batchGroupIndex = 0;
+        pendingDiscards.Clear();
+    }
+
+    private void StopBatch(string message)
+    {
+        DalamudServices.ChatGUI.Print(message);
+        batchPhase = BatchPhase.None;
+        batchGroups.Clear();
+        batchGroupIndex = 0;
+        pendingDiscards.Clear();
     }
 
     private bool IsGatheringWindowOpen()
@@ -288,13 +496,14 @@ public sealed class GatheringNotebook : OmniModuleBase
 
     public override bool ResetSettings()
     {
-        if (!config.ShowCollected && !config.AutoDiscardGathered)
+        if (!config.ShowCollected && !config.AutoDiscardGathered && config.BatchSize == 10)
         {
             return false;
         }
 
         config.ShowCollected = false;
         config.AutoDiscardGathered = false;
+        config.BatchSize = 10;
         return true;
     }
 
@@ -383,6 +592,54 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         OmniControls.HelpTooltip(Text("RuriStartHelp"));
+
+        ImGui.SameLine(0f, OmniTheme.Scale(12f));
+        using (ImRaii.Disabled(batchPhase != BatchPhase.None))
+        {
+            var batchSize = config.BatchSize;
+            if (OmniControls.SteppedInputInt(
+                    "##gatheringNotebookBatchSize",
+                    ref batchSize,
+                    OmniTheme.Scale(64f),
+                    1,
+                    50))
+            {
+                config.BatchSize = Math.Clamp(batchSize, 1, 50);
+                changed = true;
+            }
+
+            ImGui.SameLine(0f, OmniTheme.Scale(4f));
+            OmniControls.HelpIcon(Text("BatchSizeHelp"));
+        }
+
+        ImGui.SameLine(0f, OmniTheme.Scale(8f));
+        if (batchPhase == BatchPhase.None)
+        {
+            using (ImRaii.Disabled(selected == 0))
+            {
+                if (OmniControls.SmallButton(Text("BatchStart") + "##gatheringNotebookBatchStart", false))
+                {
+                    StartBatchGather();
+                }
+            }
+
+            OmniControls.HelpTooltip(Text("BatchStartHelp"));
+        }
+        else
+        {
+            if (OmniControls.SmallButton(Text("BatchStop") + "##gatheringNotebookBatchStop", false))
+            {
+                StopBatch(Text("BatchStopped"));
+            }
+
+            ImGui.SameLine(0f, OmniTheme.Scale(8f));
+            ImGui.TextUnformatted(Text(
+                "BatchProgress",
+                batchGroupIndex + 1,
+                batchGroups.Count,
+                batchGroups[batchGroupIndex].Count - batchCollectedInGroup));
+        }
+
         return changed;
     }
 
@@ -438,6 +695,21 @@ public sealed class GatheringNotebook : OmniModuleBase
             }
 
             orders.Add(new RuriOrderJson { ItemId = entry.ItemId });
+        }
+
+        return orders.Count == 0 ? string.Empty : JsonSerializer.Serialize(orders);
+    }
+
+    internal static string BuildRuriOrderJsonFromIds(IEnumerable<uint> itemIds)
+    {
+        var orders = new List<RuriOrderJson>();
+        var seen = new HashSet<uint>();
+        foreach (var itemId in itemIds)
+        {
+            if (itemId != 0 && seen.Add(itemId))
+            {
+                orders.Add(new RuriOrderJson { ItemId = itemId });
+            }
         }
 
         return orders.Count == 0 ? string.Empty : JsonSerializer.Serialize(orders);
@@ -1320,9 +1592,14 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         var loaded = DalamudServices.PlayerState.IsLoaded;
+        collectedItemIds.Clear();
         foreach (var entry in catalog.All)
         {
             entry.Collected = loaded && IsAnyGathered(entry);
+            if (entry.Collected)
+            {
+                collectedItemIds.Add(entry.ItemId);
+            }
         }
 
         lastRefresh = DateTime.UtcNow;
@@ -1430,6 +1707,7 @@ public sealed class GatheringNotebook : OmniModuleBase
     {
         public bool ShowCollected { get; set; }
         public bool AutoDiscardGathered { get; set; }
+        public int BatchSize { get; set; } = 10;
     }
 
     internal sealed class GatheringCatalog

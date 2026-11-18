@@ -123,7 +123,8 @@ internal static class Checks
                 .GetField("config", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(module)!;
             Expect(!module.ResetSettings());
             settings.ShowCollected = true;
-            Expect(module.ResetSettings() && !settings.ShowCollected);
+            settings.BatchSize = 20;
+            Expect(module.ResetSettings() && !settings.ShowCollected && settings.BatchSize == 10);
             Expect(!module.ResetSettings());
         });
 
@@ -189,6 +190,12 @@ internal static class Checks
             Expect(!root[0].GetProperty("SkipIfEnough").GetBoolean());
             Expect(root[1].GetProperty("ItemId").GetUInt32() == 7777);
             Expect(GatheringNotebook.CountRuriOrders(entries) == 2);
+
+            var batchJson = GatheringNotebook.BuildRuriOrderJsonFromIds(new uint[] { 44004, 44004, 44005 });
+            using var batchDocument = JsonDocument.Parse(batchJson);
+            Expect(batchDocument.RootElement.GetArrayLength() == 2);
+            Expect(batchDocument.RootElement[0].GetProperty("ItemId").GetUInt32() == 44004);
+            Expect(GatheringNotebook.BuildRuriOrderJsonFromIds(Array.Empty<uint>()) == string.Empty);
             Expect(GatheringNotebook.IsRuriGatherable(entries[0]));
             Expect(!GatheringNotebook.IsRuriGatherable(entries[4]));
             Expect(!GatheringNotebook.IsRuriGatherable(entries[5]));
