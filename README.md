@@ -2,8 +2,8 @@
 
 Omni Toolbox 在线模块仓库：**采集笔记图鉴**（`GatheringNotebook`）。模块使用 **API 1**，需要 Omni **1.1.8.2 或更新版本**。
 
-> 仓库地址目前填的是 `https://github.com/wuyujindu/OmniToolbox.TreeHouseOnline.GatheringNotebook`。
-> 如果实际仓库名不同，需要同步修改 `TreeHouseModules.json` 的 `RepositoryURL` 和本文件里的安装地址。
+> 仓库地址：`https://github.com/wuyujindu/OmniToolbox.TreeHouseOnline.GatheringNotebook`（公开仓库）。
+> 如果以后修改仓库名，需要同步修改 `TreeHouseModules.json` 的 `RepositoryURL` 和本文件里的安装地址。
 
 ## 安装与更新
 
