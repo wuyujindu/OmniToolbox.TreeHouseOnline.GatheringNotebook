@@ -451,12 +451,12 @@ public sealed class GatheringNotebook : OmniModuleBase
         var arrowWidth = OmniTheme.Scale(9f);
         var spacing = OmniTheme.Scale(7f);
         var checkboxSize = OmniTheme.Scale(14f);
-        var rowHeight = OmniTheme.Scale(22f);
+        const float titleScale = 1.45f;
 
-        ImGui.SetWindowFontScale(1.15f);
-        var textWidth = ImGui.CalcTextSize(label).X;
-        var textHeight = ImGui.GetTextLineHeight();
         ImGui.SetWindowFontScale(1f);
+        var textWidth = ImGui.CalcTextSize(label).X * titleScale;
+        var textHeight = ImGui.GetTextLineHeight() * titleScale;
+        var rowHeight = textHeight + OmniTheme.Scale(8f);
 
         var groupWidth = arrowWidth + spacing + textWidth + spacing + checkboxSize;
         var startX = startPosition.X + MathF.Max(0f, (contentWidth - groupWidth) * 0.5f);
@@ -490,8 +490,8 @@ public sealed class GatheringNotebook : OmniModuleBase
                 accent);
         }
 
-        ImGui.SetWindowFontScale(1.15f);
-        ImGui.SetCursorScreenPos(new Vector2(startX + arrowWidth + spacing, centerY - textHeight * 1.15f * 0.5f));
+        ImGui.SetWindowFontScale(titleScale);
+        ImGui.SetCursorScreenPos(new Vector2(startX + arrowWidth + spacing, centerY - textHeight * 0.5f));
         ImGui.TextColored(OmniTheme.ControlAccent, label);
         ImGui.SetWindowFontScale(1f);
 
