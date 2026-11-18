@@ -716,7 +716,7 @@ public sealed class GatheringNotebook : OmniModuleBase
         for (var max = 100; max > 0; max -= 5)
         {
             var min = max - 4;
-            if (entries.All(entry => entry.Level < min || entry.Level > max))
+            if (entries.All(entry => entry.HasSubCategory || entry.Level < min || entry.Level > max))
             {
                 continue;
             }
@@ -750,8 +750,7 @@ public sealed class GatheringNotebook : OmniModuleBase
         return result;
     }
 
-    internal static bool IsSpecialEntry(GatheringEntry entry) =>
-        entry.IsCollectable || entry.InFolklore || entry.InSideQuest;
+    internal static bool IsSpecialEntry(GatheringEntry entry) => entry.HasSubCategory;
 
     private void SwitchJob(int job)
     {
@@ -1156,6 +1155,22 @@ public sealed class GatheringNotebook : OmniModuleBase
 
         public IEnumerable<GatheringEntry> All => Groups.SelectMany(group => group);
 
+        private static bool IsFolkloreSubCategory(GatheringSubCategory subCategory)
+        {
+            if (subCategory.Division < 2000)
+            {
+                return false;
+            }
+
+            var label = subCategory.FolkloreBook.ExtractText();
+            if (string.IsNullOrWhiteSpace(label) && subCategory.Item.TryGetValue(out var item))
+            {
+                label = item.Name.ExtractText();
+            }
+
+            return label.Contains("传承录", StringComparison.Ordinal);
+        }
+
         public static GatheringCatalog Build()
         {
             var result = new GatheringCatalog();
@@ -1171,148 +1186,85 @@ public sealed class GatheringNotebook : OmniModuleBase
                 pointBases[row.RowId] = row;
             }
 
-            // 有常规采集点的 base：GBR 只把这些物品当作可自动采集；顺便记录采集点与传承录分类。
+            var points = new Dictionary<uint, GatheringPoint>();
+            foreach (var row in LuminaGetter.Get<GatheringPoint>())
+            {
+                points[row.RowId] = row;
+            }
+
             var subCategories = new Dictionary<uint, GatheringSubCategory>();
             foreach (var row in LuminaGetter.Get<GatheringSubCategory>())
             {
                 subCategories[row.RowId] = row;
             }
 
-            var liveBases = new HashSet<uint>();
-            var baseNodes = new Dictionary<uint, List<GatheringNodeInfo>>();
-            var baseFolklore = new HashSet<uint>();
-            var baseSideQuest = new HashSet<uint>();
-            foreach (var point in LuminaGetter.Get<GatheringPoint>())
-            {
-                var subCategoryId = point.GatheringSubCategory.RowId;
-                GatheringSubCategory subCategory = default;
-                var hasSubCategory = subCategoryId != 0 && subCategories.TryGetValue(subCategoryId, out subCategory);
-                var isSideQuest = hasSubCategory && subCategory.Division == 0 && subCategory.Quest.RowId != 0;
-
-                // 带任务编号的支线任务节点没有常规地图（territory = 1），也要收进来。
-                if (point.TerritoryType.RowId <= 1 && !isSideQuest)
-                {
-                    continue;
-                }
-
-                var baseId = point.GatheringPointBase.RowId;
-                if (baseId == 0 || !pointBases.TryGetValue(baseId, out var liveBase))
-                {
-                    continue;
-                }
-
-                if (liveBase.GatheringType.RowId >= 4 || liveBase.Item.Count == 0)
-                {
-                    continue;
-                }
-
-                liveBases.Add(baseId);
-
-                if (isSideQuest)
-                {
-                    baseSideQuest.Add(baseId);
-                }
-                else if (hasSubCategory && subCategory.Division >= 2000)
-                {
-                    baseFolklore.Add(baseId);
-                }
-
-                if (!point.TerritoryType.TryGetValue(out var territoryRow))
-                {
-                    continue;
-                }
-
-                var territory = territoryRow.PlaceName.TryGetValue(out var placeNameRow)
-                    ? placeNameRow.Name.ExtractText()
-                    : string.Empty;
-                var place = point.PlaceName.TryGetValue(out var pointPlaceName)
-                    ? pointPlaceName.Name.ExtractText()
-                    : string.Empty;
-                if (territory.Length == 0 && place.Length == 0)
-                {
-                    continue;
-                }
-
-                var node = new GatheringNodeInfo
-                {
-                    Territory = territory,
-                    Place = place,
-                    Level = liveBase.GatheringLevel
-                };
-
-                if (!baseNodes.TryGetValue(baseId, out var nodes))
-                {
-                    baseNodes[baseId] = nodes = [];
-                }
-
-                if (!nodes.Any(existing => existing.Key == node.Key))
-                {
-                    nodes.Add(node);
-                }
-            }
-
-            // 只保留有常规采集点的物品（采集笔记/成就只统计这些），并去掉活动物品。
+            // GatheringItemPoint：行 = GatheringItem，子行 = 实际放置它的采集点。
+            // 游戏内采集笔记只统计这张表里的物品，采集等级列表也以它为准。
+            var described = new Dictionary<uint, (bool Ok, string Name, uint Icon, bool Collectable, byte Level, byte Stars)>();
             var groups = new Dictionary<(uint ItemId, int TypeId), GatheringEntryBuilder>();
-            foreach (var pointBase in pointBases.Values)
+            foreach (var collection in LuminaGetter.GetSub<GatheringItemPoint>())
             {
-                if (!liveBases.Contains(pointBase.RowId))
+                foreach (var subRow in collection)
                 {
-                    continue;
-                }
+                    var gatheringItemId = subRow.RowId;
+                    if (!described.TryGetValue(gatheringItemId, out var info))
+                    {
+                        info = (false, string.Empty, 0, false, 0, 0);
+                        if (gatheringItems.TryGetValue(gatheringItemId, out var gatheringItem) &&
+                            gatheringItem.Item.RowId != 0 &&
+                            TryDescribeItem(gatheringItem, out var name, out var iconId, out var isCollectable) &&
+                            !string.IsNullOrWhiteSpace(name))
+                        {
+                            byte level = 0;
+                            byte stars = 0;
+                            if (gatheringItem.GatheringItemLevel.TryGetValue(out var itemLevel))
+                            {
+                                level = itemLevel.GatheringItemLevel;
+                                stars = itemLevel.Stars;
+                            }
 
-                var typeId = (int)pointBase.GatheringType.RowId;
-                if (!IsGatheringJobType(pointBase.GatheringType.RowId))
-                {
-                    continue;
-                }
+                            info = (true, name, iconId, isCollectable, level, stars);
+                        }
 
-                var nodes = baseNodes.GetValueOrDefault(pointBase.RowId);
-                var folklore = baseFolklore.Contains(pointBase.RowId);
-                var sideQuest = baseSideQuest.Contains(pointBase.RowId);
-                for (var index = 0; index < pointBase.Item.Count; index++)
-                {
-                    var gatheringItemId = pointBase.Item[index].RowId;
-                    if (gatheringItemId == 0 || gatheringItemId > ushort.MaxValue ||
-                        !gatheringItems.TryGetValue(gatheringItemId, out var gatheringItem))
+                        described[gatheringItemId] = info;
+                    }
+
+                    if (!info.Ok ||
+                        !points.TryGetValue(subRow.GatheringPoint.RowId, out var point) ||
+                        !pointBases.TryGetValue(point.GatheringPointBase.RowId, out var pointBase) ||
+                        !IsGatheringJobType(pointBase.GatheringType.RowId))
                     {
                         continue;
                     }
 
-                    var itemId = gatheringItem.Item.RowId;
-                    if (itemId == 0)
-                    {
-                        continue;
-                    }
-
+                    var itemId = gatheringItems[gatheringItemId].Item.RowId;
+                    var typeId = (int)pointBase.GatheringType.RowId;
                     var key = (itemId, typeId);
                     if (!groups.TryGetValue(key, out var builder))
                     {
-                        if (!TryDescribeItem(gatheringItem, out var name, out var iconId, out var isCollectable) ||
-                            string.IsNullOrWhiteSpace(name))
-                        {
-                            continue;
-                        }
-
                         groups[key] = builder = new GatheringEntryBuilder
                         {
                             ItemId = itemId,
-                            Name = name,
-                            IconId = iconId,
-                            IsCollectable = isCollectable
+                            Name = info.Name,
+                            IconId = info.Icon,
+                            IsCollectable = info.Collectable,
+                            Level = info.Level,
+                            Stars = info.Stars
                         };
                     }
 
-                    builder.InFolklore |= folklore;
-                    builder.InSideQuest |= sideQuest;
-
-                    if (nodes != null)
+                    var subCategoryId = point.GatheringSubCategory.RowId;
+                    GatheringSubCategory subCategory = default;
+                    if (subCategoryId != 0 && subCategories.TryGetValue(subCategoryId, out subCategory))
                     {
-                        foreach (var node in nodes)
+                        builder.HasSubCategory = true;
+                        if (subCategory.Division == 0 && subCategory.Quest.RowId != 0)
                         {
-                            if (!builder.Nodes.Any(existing => existing.Key == node.Key))
-                            {
-                                builder.Nodes.Add(node);
-                            }
+                            builder.InSideQuest = true;
+                        }
+                        else if (IsFolkloreSubCategory(subCategory))
+                        {
+                            builder.InFolklore = true;
                         }
                     }
 
@@ -1321,32 +1273,114 @@ public sealed class GatheringNotebook : OmniModuleBase
                         builder.GatheringItemIds.Add(gatheringItemId);
                     }
 
-                    if (gatheringItemId > builder.RepresentativeGatheringItemId)
+                    if (!point.TerritoryType.TryGetValue(out var territoryRow))
                     {
-                        builder.RepresentativeGatheringItemId = gatheringItemId;
+                        continue;
+                    }
+
+                    var territory = territoryRow.PlaceName.TryGetValue(out var placeNameRow)
+                        ? placeNameRow.Name.ExtractText()
+                        : string.Empty;
+                    var place = point.PlaceName.TryGetValue(out var pointPlaceName)
+                        ? pointPlaceName.Name.ExtractText()
+                        : string.Empty;
+                    if (territory.Length == 0 && place.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    var node = new GatheringNodeInfo
+                    {
+                        Territory = territory,
+                        Place = place,
+                        Level = pointBase.GatheringLevel
+                    };
+
+                    if (!builder.Nodes.Any(existing => existing.Key == node.Key))
+                    {
+                        builder.Nodes.Add(node);
+                    }
+                }
+            }
+
+            // 支线任务：任务专用采集点（territory = 1）不在 GatheringItemPoint 里，单独补进来。
+            var knownItems = new HashSet<uint>(groups.Keys.Select(key => key.ItemId));
+            foreach (var point in points.Values)
+            {
+                var subCategoryId = point.GatheringSubCategory.RowId;
+                GatheringSubCategory subCategory = default;
+                if (subCategoryId == 0 || !subCategories.TryGetValue(subCategoryId, out subCategory) ||
+                    subCategory.Division != 0 || subCategory.Quest.RowId == 0)
+                {
+                    continue;
+                }
+
+                if (!pointBases.TryGetValue(point.GatheringPointBase.RowId, out var pointBase) ||
+                    !IsGatheringJobType(pointBase.GatheringType.RowId))
+                {
+                    continue;
+                }
+
+                var typeId = (int)pointBase.GatheringType.RowId;
+                for (var index = 0; index < pointBase.Item.Count; index++)
+                {
+                    var gatheringItemId = pointBase.Item[index].RowId;
+                    if (gatheringItemId == 0 || !gatheringItems.TryGetValue(gatheringItemId, out var gatheringItem))
+                    {
+                        continue;
+                    }
+
+                    var itemId = gatheringItem.Item.RowId;
+                    if (itemId == 0 || knownItems.Contains(itemId) ||
+                        !TryDescribeItem(gatheringItem, out var name, out var iconId, out var isCollectable) ||
+                        string.IsNullOrWhiteSpace(name))
+                    {
+                        continue;
+                    }
+
+                    var key = (itemId, typeId);
+                    if (!groups.TryGetValue(key, out var builder))
+                    {
+                        byte level = 0;
+                        byte stars = 0;
+                        if (gatheringItem.GatheringItemLevel.TryGetValue(out var itemLevel))
+                        {
+                            level = itemLevel.GatheringItemLevel;
+                            stars = itemLevel.Stars;
+                        }
+
+                        groups[key] = builder = new GatheringEntryBuilder
+                        {
+                            ItemId = itemId,
+                            Name = name,
+                            IconId = iconId,
+                            IsCollectable = isCollectable,
+                            Level = level,
+                            Stars = stars
+                        };
+                        knownItems.Add(itemId);
+                    }
+
+                    builder.HasSubCategory = true;
+                    builder.InSideQuest = true;
+                    if (!builder.GatheringItemIds.Contains(gatheringItemId))
+                    {
+                        builder.GatheringItemIds.Add(gatheringItemId);
                     }
                 }
             }
 
             foreach (var (key, builder) in groups)
             {
-                byte level = 0;
-                byte stars = 0;
-                if (gatheringItems.TryGetValue(builder.RepresentativeGatheringItemId, out var representative) &&
-                    representative.GatheringItemLevel.TryGetValue(out var itemLevel))
-                {
-                    level = itemLevel.GatheringItemLevel;
-                    stars = itemLevel.Stars;
-                }
-
                 var entry = new GatheringEntry
                 {
                     ItemId = builder.ItemId,
                     IconId = builder.IconId,
                     Name = builder.Name,
-                    Level = level,
-                    Stars = stars,
+                    Level = builder.Level,
+                    Stars = builder.Stars,
                     IsCollectable = builder.IsCollectable,
+                    HasSubCategory = builder.HasSubCategory,
                     InFolklore = builder.InFolklore,
                     InSideQuest = builder.InSideQuest,
                     GatheringItemIds = builder.GatheringItemIds.ToArray(),
@@ -1394,8 +1428,10 @@ internal sealed class GatheringEntry
     public byte Level { get; init; }
     public byte Stars { get; init; }
     public bool IsCollectable { get; init; }
+    public bool HasSubCategory { get; init; }
     public bool InFolklore { get; init; }
     public bool InSideQuest { get; init; }
+    public bool InCollectableTrade => IsCollectable && HasSubCategory && !InFolklore && !InSideQuest;
     public IReadOnlyList<uint> GatheringItemIds { get; init; } = [];
     public IReadOnlyList<GatheringNodeInfo> Nodes { get; init; } = [];
     public bool Collected { get; set; }
@@ -1429,10 +1465,10 @@ internal sealed class GatheringCategory
 
     public bool Matches(GatheringEntry entry) => Kind switch
     {
-        GatheringCategoryKind.Collectable => entry.IsCollectable,
+        GatheringCategoryKind.Collectable => entry.InCollectableTrade,
         GatheringCategoryKind.Folklore => entry.InFolklore,
         GatheringCategoryKind.SideQuest => entry.InSideQuest,
-        _ => entry.Level >= MinLevel && entry.Level <= MaxLevel
+        _ => !entry.HasSubCategory && entry.Level >= MinLevel && entry.Level <= MaxLevel
     };
 }
 
@@ -1442,9 +1478,11 @@ internal sealed class GatheringEntryBuilder
     public string Name = string.Empty;
     public uint IconId;
     public bool IsCollectable;
+    public bool HasSubCategory;
     public bool InFolklore;
     public bool InSideQuest;
-    public uint RepresentativeGatheringItemId;
+    public byte Level;
+    public byte Stars;
     public List<uint> GatheringItemIds { get; } = [];
     public List<GatheringNodeInfo> Nodes { get; } = [];
 }
