@@ -171,10 +171,12 @@ internal static class Checks
         {
             var entries = new[]
             {
-                new GatheringEntry { ItemId = 5509, Selected = true },
-                new GatheringEntry { ItemId = 5509, Selected = true },
-                new GatheringEntry { ItemId = 5380, Selected = false },
-                new GatheringEntry { ItemId = 7777, Selected = true }
+                new GatheringEntry { ItemId = 5509, Selected = true, HasWorldNode = true },
+                new GatheringEntry { ItemId = 5509, Selected = true, HasWorldNode = true },
+                new GatheringEntry { ItemId = 5380, Selected = false, HasWorldNode = true },
+                new GatheringEntry { ItemId = 7777, Selected = true, HasWorldNode = true },
+                new GatheringEntry { ItemId = 15, Selected = true, HasWorldNode = true, IsCrystal = true },
+                new GatheringEntry { ItemId = 38281, Selected = true, HasWorldNode = false }
             };
 
             var json = GatheringNotebook.BuildRuriOrderJson(entries);
@@ -186,6 +188,7 @@ internal static class Checks
             Expect(root[0].GetProperty("SourceIntent").GetString() == "Gather");
             Expect(!root[0].GetProperty("SkipIfEnough").GetBoolean());
             Expect(root[1].GetProperty("ItemId").GetUInt32() == 7777);
+            Expect(GatheringNotebook.CountRuriOrders(entries) == 2);
             Expect(GatheringNotebook.BuildRuriOrderJson(Array.Empty<GatheringEntry>()) == string.Empty);
         });
 

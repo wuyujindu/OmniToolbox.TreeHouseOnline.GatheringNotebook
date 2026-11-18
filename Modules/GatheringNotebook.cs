@@ -85,6 +85,8 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["RuriStartHelp"] = "把选中的未采集物生成 Ruri 订单, 打开 Ruri 并直接开始采集",
             ["RuriSent"] = "已向 Ruri 发送 {0} 个订单",
             ["RuriPlanSent"] = "已向 Ruri 发送 {0} 个订单并开始计划检查",
+            ["RuriSkipped"] = "已跳过 {0} 个 Ruri 不支持的物品（水晶 / 任务专用）",
+            ["RuriNoGatherable"] = "选中的物品里没有 Ruri 可采集的项目",
             ["RuriFailed"] = "无法调用 Ruri: 命令 /ruri 不可用, 请确认琉璃的宝石插件已启用",
             ["PresetDialogTitle"] = "GBR 自动采集预设",
             ["PresetDialogHint"] = "在 GatherBuddy Reborn 的自动采集列表里点「从剪贴板导入」, 一次粘贴一个预设; 每个预设最多 100 项。",
@@ -247,9 +249,12 @@ public sealed class GatheringNotebook : OmniModuleBase
         var json = BuildRuriOrderJson(entries);
         if (json.Length == 0)
         {
+            DalamudServices.ChatGUI.Print(Text("RuriNoGatherable"));
             return;
         }
 
+        var selectedCount = entries.Where(entry => entry.Selected).Select(entry => entry.ItemId).Distinct().Count();
+        var sentCount = CountRuriOrders(entries);
         ImGui.SetClipboardText(json);
 
         var commandManager = DalamudServices.CommandManager;
@@ -259,10 +264,13 @@ public sealed class GatheringNotebook : OmniModuleBase
             return;
         }
 
-        var count = entries.Where(entry => entry.Selected).Select(entry => entry.ItemId).Distinct().Count();
         if (commandManager.ProcessCommand((start ? "/ruri run " : "/ruri dryrun ") + json))
         {
-            DalamudServices.ChatGUI.Print(Text(start ? "RuriSent" : "RuriPlanSent", count));
+            DalamudServices.ChatGUI.Print(Text(start ? "RuriSent" : "RuriPlanSent", sentCount));
+            if (selectedCount > sentCount)
+            {
+                DalamudServices.ChatGUI.Print(Text("RuriSkipped", selectedCount - sentCount));
+            }
         }
         else
         {
@@ -276,7 +284,7 @@ public sealed class GatheringNotebook : OmniModuleBase
         var seen = new HashSet<uint>();
         foreach (var entry in entries)
         {
-            if (!entry.Selected || !seen.Add(entry.ItemId))
+            if (!CanSendToRuri(entry) || !seen.Add(entry.ItemId))
             {
                 continue;
             }
@@ -286,6 +294,24 @@ public sealed class GatheringNotebook : OmniModuleBase
 
         return orders.Count == 0 ? string.Empty : JsonSerializer.Serialize(orders);
     }
+
+    internal static int CountRuriOrders(IEnumerable<GatheringEntry> entries)
+    {
+        var seen = new HashSet<uint>();
+        var count = 0;
+        foreach (var entry in entries)
+        {
+            if (CanSendToRuri(entry) && seen.Add(entry.ItemId))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    // Ruri 的采集数据不包含水晶类，任务专用物品也没有常规采集点，整批订单会因一个不支持项失败。
+    private static bool CanSendToRuri(GatheringEntry entry) => entry.Selected && entry.HasWorldNode && !entry.IsCrystal;
 
     private int CountSelected()
     {
@@ -1328,7 +1354,7 @@ public sealed class GatheringNotebook : OmniModuleBase
 
             // GatheringItemPoint：行 = GatheringItem，子行 = 实际放置它的采集点。
             // 游戏内采集笔记只统计这张表里的物品，采集等级列表也以它为准。
-            var described = new Dictionary<uint, (bool Ok, string Name, uint Icon, bool Collectable, byte Level, byte Stars)>();
+            var described = new Dictionary<uint, (bool Ok, string Name, uint Icon, bool Collectable, bool Crystal, byte Level, byte Stars)>();
             var groups = new Dictionary<(uint ItemId, int TypeId), GatheringEntryBuilder>();
             foreach (var collection in LuminaGetter.GetSub<GatheringItemPoint>())
             {
@@ -1337,10 +1363,10 @@ public sealed class GatheringNotebook : OmniModuleBase
                     var gatheringItemId = subRow.RowId;
                     if (!described.TryGetValue(gatheringItemId, out var info))
                     {
-                        info = (false, string.Empty, 0, false, 0, 0);
+                        info = (false, string.Empty, 0, false, false, 0, 0);
                         if (gatheringItems.TryGetValue(gatheringItemId, out var gatheringItem) &&
                             gatheringItem.Item.RowId != 0 &&
-                            TryDescribeItem(gatheringItem, out var name, out var iconId, out var isCollectable) &&
+                            TryDescribeItem(gatheringItem, out var name, out var iconId, out var isCollectable, out var isCrystal) &&
                             !string.IsNullOrWhiteSpace(name))
                         {
                             byte level = 0;
@@ -1351,7 +1377,7 @@ public sealed class GatheringNotebook : OmniModuleBase
                                 stars = itemLevel.Stars;
                             }
 
-                            info = (true, name, iconId, isCollectable, level, stars);
+                            info = (true, name, iconId, isCollectable, isCrystal, level, stars);
                         }
 
                         described[gatheringItemId] = info;
@@ -1376,6 +1402,8 @@ public sealed class GatheringNotebook : OmniModuleBase
                             Name = info.Name,
                             IconId = info.Icon,
                             IsCollectable = info.Collectable,
+                            IsCrystal = info.Crystal,
+                            HasWorldNode = true,
                             Level = info.Level,
                             Stars = info.Stars
                         };
@@ -1460,7 +1488,7 @@ public sealed class GatheringNotebook : OmniModuleBase
 
                     var itemId = gatheringItem.Item.RowId;
                     if (itemId == 0 || knownItems.Contains(itemId) ||
-                        !TryDescribeItem(gatheringItem, out var name, out var iconId, out var isCollectable) ||
+                        !TryDescribeItem(gatheringItem, out var name, out var iconId, out var isCollectable, out var isCrystal) ||
                         string.IsNullOrWhiteSpace(name))
                     {
                         continue;
@@ -1483,6 +1511,7 @@ public sealed class GatheringNotebook : OmniModuleBase
                             Name = name,
                             IconId = iconId,
                             IsCollectable = isCollectable,
+                            IsCrystal = isCrystal,
                             Level = level,
                             Stars = stars
                         };
@@ -1508,6 +1537,8 @@ public sealed class GatheringNotebook : OmniModuleBase
                     Level = builder.Level,
                     Stars = builder.Stars,
                     IsCollectable = builder.IsCollectable,
+                    IsCrystal = builder.IsCrystal,
+                    HasWorldNode = builder.HasWorldNode,
                     HasSubCategory = builder.HasSubCategory,
                     InFolklore = builder.InFolklore,
                     InSideQuest = builder.InSideQuest,
@@ -1526,18 +1557,24 @@ public sealed class GatheringNotebook : OmniModuleBase
             return result;
         }
 
+        // 水晶类（ItemUICategory 59）Ruri 的采集数据不支持，订单里要排除。
+        internal const uint CrystalCategoryId = 59;
+
         internal static bool TryDescribeItem(
             GatheringItem gatheringItem,
             out string name,
             out uint iconId,
-            out bool isCollectable)
+            out bool isCollectable,
+            out bool isCrystal)
         {
             isCollectable = false;
+            isCrystal = false;
             if (gatheringItem.Item.TryGetValue<Item>(out var item))
             {
                 name = item.Name.ExtractText();
                 iconId = item.Icon;
                 isCollectable = item.IsCollectable;
+                isCrystal = item.ItemUICategory.RowId == CrystalCategoryId;
                 return !string.IsNullOrWhiteSpace(name);
             }
 
@@ -1556,6 +1593,8 @@ internal sealed class GatheringEntry
     public byte Level { get; init; }
     public byte Stars { get; init; }
     public bool IsCollectable { get; init; }
+    public bool IsCrystal { get; init; }
+    public bool HasWorldNode { get; init; }
     public bool HasSubCategory { get; init; }
     public bool InFolklore { get; init; }
     public bool InSideQuest { get; init; }
@@ -1606,6 +1645,8 @@ internal sealed class GatheringEntryBuilder
     public string Name = string.Empty;
     public uint IconId;
     public bool IsCollectable;
+    public bool IsCrystal;
+    public bool HasWorldNode;
     public bool HasSubCategory;
     public bool InFolklore;
     public bool InSideQuest;
