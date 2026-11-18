@@ -69,6 +69,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["Copy"] = "复制",
             ["Copied"] = "已复制: {0}",
             ["SkippedEvents"] = "已跳过 {0} 个活动采集物 (GBR 没有对应采集物)",
+            ["SkippedNoNode"] = "已跳过 {0} 个没有常规采集点的采集物 (GBR 无法自动采集)",
             ["Close"] = "关闭",
             ["NoSelection"] = "还没有选择任何采集物"
         });
@@ -83,6 +84,7 @@ public sealed class GatheringNotebook : OmniModuleBase
     private readonly List<GbrPreset> presets = [];
     private string copiedPreset = string.Empty;
     private int skippedEventItems;
+    private int skippedNoNode;
 
     public override bool HasSettings => true;
 
@@ -280,10 +282,11 @@ public sealed class GatheringNotebook : OmniModuleBase
         foreach (var entry in filteredEntries)
         {
             ImGui.TableNextRow();
+            ImGui.PushID((int)entry.ItemId);
 
             ImGui.TableNextColumn();
             var selected = entry.Selected;
-            if (ImGui.Checkbox($"##gatheringNotebookSelect{entry.GatheringItemId}", ref selected))
+            if (ImGui.Checkbox("##gatheringNotebookSelect", ref selected))
             {
                 entry.Selected = selected;
             }
@@ -311,6 +314,8 @@ public sealed class GatheringNotebook : OmniModuleBase
             ImGui.TableNextColumn();
             ImGui.AlignTextToFramePadding();
             ImGui.TextUnformatted(entry.Stars == 0 ? "—" : new string('★', entry.Stars));
+
+            ImGui.PopID();
         }
     }
 
@@ -323,13 +328,19 @@ public sealed class GatheringNotebook : OmniModuleBase
     {
         presets.Clear();
         skippedEventItems = 0;
+        skippedNoNode = 0;
         if (catalog == null)
         {
             return;
         }
 
-        skippedEventItems = catalog.Mining.Count(entry => entry.Selected && entry.IsEventItem)
-                            + catalog.Botany.Count(entry => entry.Selected && entry.IsEventItem);
+        var selected = catalog.Mining.Concat(catalog.Botany).Where(entry => entry.Selected).ToList();
+        skippedEventItems = selected.Where(entry => entry.IsEventItem).Select(entry => entry.ItemId).Distinct().Count();
+        skippedNoNode = selected
+            .Where(entry => !entry.IsEventItem && !entry.HasNode)
+            .Select(entry => entry.ItemId)
+            .Distinct()
+            .Count();
         presets.AddRange(BuildPresets(
             catalog.Mining,
             catalog.Botany,
@@ -348,9 +359,10 @@ public sealed class GatheringNotebook : OmniModuleBase
         string descriptionFormat)
     {
         var result = new List<GbrPreset>();
+        var exported = new HashSet<uint>();
         var order = 1;
-        AppendPresets(result, mining, miningLabel, nameFormat, descriptionFormat, ref order);
-        AppendPresets(result, botany, botanyLabel, nameFormat, descriptionFormat, ref order);
+        AppendPresets(result, mining, miningLabel, nameFormat, descriptionFormat, exported, ref order);
+        AppendPresets(result, botany, botanyLabel, nameFormat, descriptionFormat, exported, ref order);
         return result;
     }
 
@@ -360,12 +372,23 @@ public sealed class GatheringNotebook : OmniModuleBase
         string label,
         string nameFormat,
         string descriptionFormat,
+        HashSet<uint> exported,
         ref int order)
     {
-        var itemIds = entries
-            .Where(entry => entry.Selected && !entry.IsEventItem)
-            .Select(entry => entry.ItemId)
-            .ToList();
+        var itemIds = new List<uint>();
+        foreach (var entry in entries)
+        {
+            if (!entry.Selected || entry.IsEventItem || !entry.HasNode)
+            {
+                continue;
+            }
+
+            // 同一物品可能同时属于采矿和园艺，只导出一次。
+            if (exported.Add(entry.ItemId))
+            {
+                itemIds.Add(entry.ItemId);
+            }
+        }
         for (var offset = 0; offset < itemIds.Count; offset += GbrPresetItemLimit)
         {
             var chunk = itemIds.GetRange(offset, Math.Min(GbrPresetItemLimit, itemIds.Count - offset));
@@ -422,6 +445,11 @@ public sealed class GatheringNotebook : OmniModuleBase
             ImGui.TextUnformatted(Text("SkippedEvents", skippedEventItems));
         }
 
+        if (skippedNoNode > 0)
+        {
+            ImGui.TextUnformatted(Text("SkippedNoNode", skippedNoNode));
+        }
+
         ImGui.Separator();
         if (presets.Count == 0)
         {
@@ -465,15 +493,28 @@ public sealed class GatheringNotebook : OmniModuleBase
         var loaded = DalamudServices.PlayerState.IsLoaded;
         foreach (var entry in catalog.Mining)
         {
-            entry.Collected = loaded && QuestManager.IsGatheringItemGathered((ushort)entry.GatheringItemId);
+            entry.Collected = loaded && IsAnyGathered(entry);
         }
 
         foreach (var entry in catalog.Botany)
         {
-            entry.Collected = loaded && QuestManager.IsGatheringItemGathered((ushort)entry.GatheringItemId);
+            entry.Collected = loaded && IsAnyGathered(entry);
         }
 
         lastRefresh = DateTime.UtcNow;
+    }
+
+    private static bool IsAnyGathered(GatheringEntry entry)
+    {
+        foreach (var gatheringItemId in entry.GatheringItemIds)
+        {
+            if (QuestManager.IsGatheringItemGathered((ushort)gatheringItemId))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private bool EnsureCatalog()
@@ -559,14 +600,44 @@ public sealed class GatheringNotebook : OmniModuleBase
         public static GatheringCatalog Build()
         {
             var result = new GatheringCatalog();
-            var branches = new Dictionary<uint, GatheringBranch>();
             var gatheringItems = new Dictionary<uint, GatheringItem>();
             foreach (var row in LuminaGetter.Get<GatheringItem>())
             {
                 gatheringItems[row.RowId] = row;
             }
 
-            foreach (var pointBase in LuminaGetter.Get<GatheringPointBase>())
+            var pointBases = new Dictionary<uint, GatheringPointBase>();
+            foreach (var row in LuminaGetter.Get<GatheringPointBase>())
+            {
+                pointBases[row.RowId] = row;
+            }
+
+            // 有常规采集点的 base：GBR 只把这些物品当作可自动采集。
+            var liveBases = new HashSet<uint>();
+            foreach (var point in LuminaGetter.Get<GatheringPoint>())
+            {
+                if (point.TerritoryType.RowId <= 1)
+                {
+                    continue;
+                }
+
+                var baseId = point.GatheringPointBase.RowId;
+                if (baseId == 0 || !pointBases.TryGetValue(baseId, out var liveBase))
+                {
+                    continue;
+                }
+
+                if (liveBase.GatheringType.RowId >= 4 || liveBase.Item.Count == 0)
+                {
+                    continue;
+                }
+
+                liveBases.Add(baseId);
+            }
+
+            // 按 (物品, 分支) 合并：同一物品的多个 GatheringItem 行只保留一条，避免列表重复。
+            var groups = new Dictionary<(uint ItemId, GatheringBranch Branch), GatheringEntryBuilder>();
+            foreach (var pointBase in pointBases.Values)
             {
                 var branch = ClassifyGatheringType(pointBase.GatheringType.RowId);
                 if (branch == GatheringBranch.None)
@@ -574,60 +645,59 @@ public sealed class GatheringNotebook : OmniModuleBase
                     continue;
                 }
 
+                var live = liveBases.Contains(pointBase.RowId);
                 for (var index = 0; index < pointBase.Item.Count; index++)
                 {
                     var gatheringItemId = pointBase.Item[index].RowId;
-                    if (gatheringItemId == 0 || gatheringItemId > ushort.MaxValue)
+                    if (gatheringItemId == 0 || gatheringItemId > ushort.MaxValue ||
+                        !gatheringItems.TryGetValue(gatheringItemId, out var gatheringItem))
                     {
                         continue;
                     }
 
-                    branches[gatheringItemId] = branches.TryGetValue(gatheringItemId, out var existing)
-                        ? existing | branch
-                        : branch;
+                    var itemId = gatheringItem.Item.RowId;
+                    if (itemId == 0)
+                    {
+                        continue;
+                    }
+
+                    var key = (itemId, branch);
+                    if (!groups.TryGetValue(key, out var builder))
+                    {
+                        if (!TryDescribeItem(gatheringItem, out var name, out var iconId, out var isEventItem) ||
+                            string.IsNullOrWhiteSpace(name))
+                        {
+                            continue;
+                        }
+
+                        groups[key] = builder = new GatheringEntryBuilder
+                        {
+                            ItemId = itemId,
+                            Name = name,
+                            IconId = iconId,
+                            IsEventItem = isEventItem
+                        };
+                    }
+
+                    builder.HasNode |= live;
+                    if (!builder.GatheringItemIds.Contains(gatheringItemId))
+                    {
+                        builder.GatheringItemIds.Add(gatheringItemId);
+                    }
+
+                    if (gatheringItemId > builder.RepresentativeGatheringItemId)
+                    {
+                        builder.RepresentativeGatheringItemId = gatheringItemId;
+                    }
                 }
             }
 
-            foreach (var (gatheringItemId, branch) in branches)
+            foreach (var (key, builder) in groups)
             {
-                if (!gatheringItems.TryGetValue(gatheringItemId, out var gatheringItem))
-                {
-                    continue;
-                }
-
-                var itemId = gatheringItem.Item.RowId;
-                if (itemId == 0)
-                {
-                    continue;
-                }
-
-                string name;
-                uint iconId;
-                var isEventItem = false;
-                if (gatheringItem.Item.TryGetValue<Item>(out var item))
-                {
-                    name = item.Name.ExtractText();
-                    iconId = item.Icon;
-                }
-                else if (gatheringItem.Item.TryGetValue<EventItem>(out var eventItem))
-                {
-                    name = eventItem.Singular.ExtractText();
-                    iconId = eventItem.Icon;
-                    isEventItem = true;
-                }
-                else
-                {
-                    continue;
-                }
-
-                if (string.IsNullOrWhiteSpace(name))
-                {
-                    continue;
-                }
-
                 byte level = 0;
                 byte stars = 0;
-                if (gatheringItem.GatheringItemLevel.TryGetValue(out var itemLevel))
+                if (gatheringItems.TryGetValue(builder.RepresentativeGatheringItemId, out var representative) &&
+                    representative.GatheringItemLevel.TryGetValue(out var itemLevel))
                 {
                     level = itemLevel.GatheringItemLevel;
                     stars = itemLevel.Stars;
@@ -635,21 +705,21 @@ public sealed class GatheringNotebook : OmniModuleBase
 
                 var entry = new GatheringEntry
                 {
-                    GatheringItemId = gatheringItemId,
-                    ItemId = itemId,
-                    IconId = iconId,
-                    Name = name,
+                    ItemId = builder.ItemId,
+                    IconId = builder.IconId,
+                    Name = builder.Name,
                     Level = level,
                     Stars = stars,
-                    IsEventItem = isEventItem
+                    IsEventItem = builder.IsEventItem,
+                    HasNode = builder.HasNode,
+                    GatheringItemIds = builder.GatheringItemIds.ToArray()
                 };
 
-                if (branch.HasFlag(GatheringBranch.Mining))
+                if (key.Branch == GatheringBranch.Mining)
                 {
                     result.Mining.Add(entry);
                 }
-
-                if (branch.HasFlag(GatheringBranch.Botany))
+                else
                 {
                     result.Botany.Add(entry);
                 }
@@ -659,20 +729,55 @@ public sealed class GatheringNotebook : OmniModuleBase
             result.Botany.Sort(CompareEntries);
             return result;
         }
+
+        internal static bool TryDescribeItem(GatheringItem gatheringItem, out string name, out uint iconId, out bool isEventItem)
+        {
+            isEventItem = false;
+            if (gatheringItem.Item.TryGetValue<Item>(out var item))
+            {
+                name = item.Name.ExtractText();
+                iconId = item.Icon;
+                return !string.IsNullOrWhiteSpace(name);
+            }
+
+            if (gatheringItem.Item.TryGetValue<EventItem>(out var eventItem))
+            {
+                name = eventItem.Singular.ExtractText();
+                iconId = eventItem.Icon;
+                isEventItem = true;
+                return !string.IsNullOrWhiteSpace(name);
+            }
+
+            name = string.Empty;
+            iconId = 0;
+            return false;
+        }
     }
 }
 
 internal sealed class GatheringEntry
 {
-    public uint GatheringItemId { get; init; }
     public uint ItemId { get; init; }
     public uint IconId { get; init; }
     public string Name { get; init; } = string.Empty;
     public byte Level { get; init; }
     public byte Stars { get; init; }
     public bool IsEventItem { get; init; }
+    public bool HasNode { get; init; }
+    public IReadOnlyList<uint> GatheringItemIds { get; init; } = [];
     public bool Collected { get; set; }
     public bool Selected { get; set; }
+}
+
+internal sealed class GatheringEntryBuilder
+{
+    public uint ItemId;
+    public string Name = string.Empty;
+    public uint IconId;
+    public bool IsEventItem;
+    public bool HasNode;
+    public uint RepresentativeGatheringItemId;
+    public List<uint> GatheringItemIds { get; } = [];
 }
 
 internal sealed class GbrPreset(string name, string description, List<uint> itemIds, string base64)

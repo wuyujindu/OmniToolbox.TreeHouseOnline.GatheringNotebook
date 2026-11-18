@@ -102,20 +102,23 @@ internal static class Checks
             Expect(!module.ResetSettings());
         });
 
-        Check("GBR preset export encoding and chunking", () =>
+        Check("GBR preset export encoding, dedupe and chunking", () =>
         {
-            static GatheringEntry Entry(uint itemId, bool selected, bool eventItem = false) => new()
+            static GatheringEntry Entry(uint itemId, bool selected, bool eventItem = false, bool hasNode = true) => new()
             {
                 ItemId = itemId,
                 Name = "item" + itemId,
                 Level = 1,
                 Selected = selected,
-                IsEventItem = eventItem
+                IsEventItem = eventItem,
+                HasNode = hasNode
             };
 
             var mining = Enumerable.Range(0, 250).Select(index => Entry((uint)(1000 + index), true)).ToList();
             mining.Add(Entry(9999, true, eventItem: true));
+            mining.Add(Entry(8888, true, hasNode: false));
             var botany = Enumerable.Range(0, 120).Select(index => Entry((uint)(2000 + index), true)).ToList();
+            botany.Add(Entry(1000, true)); // 与采矿重复，应只导出一次
             botany.Add(Entry(7777, false));
 
             var presets = GatheringNotebook.BuildPresets(mining, botany, "采矿", "园艺", "{0} 未采集 {1}", "共 {0} 项");
@@ -124,7 +127,11 @@ internal static class Checks
             Expect(presets[3].ItemIds.Count == 100 && presets[4].ItemIds.Count == 20);
             Expect(presets[0].Name == "采矿 未采集 1" && presets[2].Name == "采矿 未采集 3");
             Expect(presets[3].Name == "园艺 未采集 1");
-            Expect(presets.All(preset => !preset.ItemIds.Contains(9999u) && !preset.ItemIds.Contains(7777u)));
+
+            var allIds = presets.SelectMany(preset => preset.ItemIds).ToList();
+            Expect(allIds.Count == allIds.Distinct().Count());
+            Expect(!allIds.Contains(9999u) && !allIds.Contains(8888u) && !allIds.Contains(7777u));
+            Expect(allIds.Count == 370);
             Expect(presets.All(preset => preset.Base64.Length > 0));
 
             var decoded = DecodePreset(presets[0].Base64);

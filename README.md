@@ -23,7 +23,8 @@ Omni 读取默认分支根目录的 `TreeHouseModules.json`，下载并校验模
 
 - 采集物来自 `GatheringItem`，按 `GatheringPointBase.GatheringType` 归入分支：`0/1`（采掘、碎石）算采矿，`2/3`（采伐、割草）算园艺，捕鱼用的类型不纳入。
 - 完成状态调用 `QuestManager.IsGatheringItemGathered(gatheringItemId)`，参数是 `GatheringItem` 的 RowId；只在角色登录后读取，未登录时仅显示提示。
-- 采集物名称与图标同时兼容 `Item` 与 `EventItem`（活动采集物），活动物品取 `EventItem.Singular`。`GatheringItem.IsHidden` 标记的条目也会列出，因此总数可能比游戏内列表略多。
+- **同一物品只列一条**：一个物品可能对应多个 `GatheringItem` 行（不同等级/节点），模块按物品 ID 合并，采集状态取「任意一行采集过」。
+- 采集物名称与图标同时兼容 `Item` 与 `EventItem`（活动采集物），活动物品取 `EventItem.Singular`。
 - 设置项：显示已采集、按名称搜索、手动刷新；设置界面打开时每 2 秒自动刷新一次。
 
 ### 导出 GatherBuddy Reborn 自动采集预设
@@ -31,13 +32,14 @@ Omni 读取默认分支根目录的 `TreeHouseModules.json`，下载并校验模
 列表每行都有勾选框，分支上方有「全选」「清除选择」（作用于当前筛选结果）。选好未采集物后点「导出 GBR 预设」：
 
 - 按分支（采矿 / 园艺）生成预设，**每个预设最多 100 项**，超出自动拆成第 2、3… 组；
+- 只导出 GBR 真正能采集的物品：`EventItem` 活动物品、以及没有常规采集点（`GatheringPoint` 未引用其 `GatheringPointBase`）的物品都会跳过，弹窗分别提示跳过数量；
+- 同一物品同时属于采矿和园艺时只导出一次，不会在两个预设里重复；
 - 弹窗里逐个点「复制」，然后在 GatherBuddy Reborn 的自动采集列表点「从剪贴板导入」，粘贴即可；
-- 预设名形如 `采矿 未采集 1`，数量全部为 1、全部启用、不勾选 Fallback；
-- `EventItem` 活动采集物会被跳过（GBR 里没有对应采集物），弹窗会显示跳过了几个。
+- 预设名形如 `采矿 未采集 1`，数量全部为 1、全部启用、不勾选 Fallback。
 
 导出的剪贴板内容是 GBR 自己的格式：`Base64(GZip(0x06 + JSON))`，其中 JSON 字段与 `auto_gather_lists.json` 一致（`ItemIds` / `Quantities` / `PrefferedLocations` / `EnabledItems` / `Name` / `Description` / `FolderPath` / `Order` / `Enabled` / `Fallback` / `RemoveCompletedItems`）。自测会用同样的解码流程校验，并且已在 7.5.0.3 上用 GBR 的 `Config.FromBase64` 实测可以解析。
 
-当前国服数据下两个分支约 980 / 1100 条。由于完成状态来自游戏内存，只有在游戏内登录角色后才会显示真实进度。
+当前国服数据下：按物品去重后采矿 912 条、园艺 1033 条（含活动物品与特殊内容物品）；其中**有常规采集点、可导出给 GBR** 的约 520 / 630 条，跨分支去重后约 1050 个物品。由于完成状态来自游戏内存，只有在游戏内登录角色后才会显示真实进度。
 
 ## 模块组织与维护
 
