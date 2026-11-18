@@ -5,11 +5,11 @@
       "InternalName": "GatheringNotebook",
       "Author": "WYJD",
       "RepositoryURL": "https://github.com/wuyujindu/OmniToolbox.TreeHouseOnline.GatheringNotebook",
-      "Version": "2.4.0",
+      "Version": "2.5.0",
       "ApiVersion": 1,
       "MinimumOmniVersion": "1.1.8.2",
       "File": "Modules/GatheringNotebook.cs",
-      "Sha256": "4C85698A21F2976215D20BABA9395C7C7F44C731B78FD8E47DCB030D2DE6773F",
+      "Sha256": "5FA782A285105460AD40A310D82E5622A7932812BEDA56BABB76952EE13F23CB",
       "Localization": {
         "Source": {
           "Title": "采集笔记图鉴",

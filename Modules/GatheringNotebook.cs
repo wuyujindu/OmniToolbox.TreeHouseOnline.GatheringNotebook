@@ -41,6 +41,13 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["Description"] = "检测角色采集笔记的完成情况, 按采矿与园艺两个分支列出尚未采集过的采集物",
             ["Mining"] = "采矿",
             ["Botany"] = "园艺",
+            ["TypeMining"] = "采掘",
+            ["TypeQuarrying"] = "碎石",
+            ["TypeLogging"] = "采伐",
+            ["TypeHarvesting"] = "割草",
+            ["SpecialCollectable"] = "收藏品交易",
+            ["SpecialFolklore"] = "传承录",
+            ["SpecialSideQuest"] = "支线任务",
             ["MiningProgress"] = "采矿 已采集 {0} / {1}",
             ["BotanyProgress"] = "园艺 已采集 {0} / {1}",
             ["LevelSection"] = "采集等级",
@@ -98,7 +105,8 @@ public sealed class GatheringNotebook : OmniModuleBase
     private string search = string.Empty;
     private readonly List<GatheringEntry> filteredEntries = [];
     private readonly List<GbrPreset> presets = [];
-    private GatheringBranch activeBranch = GatheringBranch.Mining;
+    private int activeJob;
+    private int activeType;
     private string selectedCategoryKey = string.Empty;
     private GatheringEntry? detailEntry;
     private string copiedPreset = string.Empty;
@@ -233,7 +241,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             return;
         }
 
-        var entries = catalog.Mining.Concat(catalog.Botany).ToList();
+        var entries = catalog.All.ToList();
         var json = BuildRuriOrderJson(entries);
         if (json.Length == 0)
         {
@@ -284,7 +292,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             return 0;
         }
 
-        return catalog.Mining.Count(entry => entry.Selected) + catalog.Botany.Count(entry => entry.Selected);
+        return catalog.All.Count(entry => entry.Selected);
     }
 
     private void DrawProgress()
@@ -294,11 +302,11 @@ public sealed class GatheringNotebook : OmniModuleBase
             return;
         }
 
-        var miningCollected = catalog.Mining.Count(entry => entry.Collected);
-        var botanyCollected = catalog.Botany.Count(entry => entry.Collected);
-        ImGui.TextUnformatted(Text("MiningProgress", miningCollected, catalog.Mining.Count));
+        var miningEntries = catalog.ForJob(0).ToList();
+        var botanyEntries = catalog.ForJob(1).ToList();
+        ImGui.TextUnformatted(Text("MiningProgress", miningEntries.Count(entry => entry.Collected), miningEntries.Count));
         ImGui.SameLine(0f, OmniTheme.Scale(18f));
-        ImGui.TextUnformatted(Text("BotanyProgress", botanyCollected, catalog.Botany.Count));
+        ImGui.TextUnformatted(Text("BotanyProgress", botanyEntries.Count(entry => entry.Collected), botanyEntries.Count));
     }
 
     private void DrawBody()
@@ -308,7 +316,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             return;
         }
 
-        var entries = activeBranch == GatheringBranch.Mining ? catalog.Mining : catalog.Botany;
+        var entries = catalog.Groups[activeType];
         var categories = BuildCategories(entries);
         if (categories.Count == 0)
         {
@@ -373,16 +381,32 @@ public sealed class GatheringNotebook : OmniModuleBase
 
     private void DrawSidebar(List<GatheringEntry> entries, List<GatheringCategory> categories)
     {
-        var buttonWidth = (ImGui.GetContentRegionAvail().X - OmniTheme.Scale(6f)) * 0.5f;
-        if (OmniControls.SmallButton(Text("Mining") + "##gatheringNotebookMining", activeBranch == GatheringBranch.Mining, new Vector2(buttonWidth, 0f)))
+        var jobWidth = (ImGui.GetContentRegionAvail().X - OmniTheme.Scale(6f)) * 0.5f;
+        if (OmniControls.SmallButton(Text("Mining") + "##gatheringNotebookJobMining", activeJob == 0, new Vector2(jobWidth, 0f)))
         {
-            SwitchBranch(GatheringBranch.Mining);
+            SwitchJob(0);
         }
 
         ImGui.SameLine(0f, OmniTheme.Scale(6f));
-        if (OmniControls.SmallButton(Text("Botany") + "##gatheringNotebookBotany", activeBranch == GatheringBranch.Botany, new Vector2(buttonWidth, 0f)))
+        if (OmniControls.SmallButton(Text("Botany") + "##gatheringNotebookJobBotany", activeJob == 1, new Vector2(jobWidth, 0f)))
         {
-            SwitchBranch(GatheringBranch.Botany);
+            SwitchJob(1);
+        }
+
+        var typeKeys = activeJob == 0 ? new[] { "TypeMining", "TypeQuarrying" } : new[] { "TypeLogging", "TypeHarvesting" };
+        var typeWidth = (ImGui.GetContentRegionAvail().X - OmniTheme.Scale(6f)) * 0.5f;
+        for (var index = 0; index < typeKeys.Length; index++)
+        {
+            var type = activeJob * 2 + index;
+            if (index > 0)
+            {
+                ImGui.SameLine(0f, OmniTheme.Scale(6f));
+            }
+
+            if (OmniControls.SmallButton(Text(typeKeys[index]) + "##gatheringNotebookType" + type, activeType == type, new Vector2(typeWidth, 0f)))
+            {
+                SwitchType(type);
+            }
         }
 
         ImGui.Spacing();
@@ -626,7 +650,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             return;
         }
 
-        var selected = catalog.Mining.Concat(catalog.Botany)
+        var selected = catalog.All
             .Where(entry => entry.Selected)
             .GroupBy(entry => entry.ItemId)
             .Select(group => group.First())
@@ -665,15 +689,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             return;
         }
 
-        foreach (var entry in catalog.Mining)
-        {
-            if (entry.ItemId == itemId)
-            {
-                entry.Selected = false;
-            }
-        }
-
-        foreach (var entry in catalog.Botany)
+        foreach (var entry in catalog.All)
         {
             if (entry.ItemId == itemId)
             {
@@ -714,29 +730,20 @@ public sealed class GatheringNotebook : OmniModuleBase
             });
         }
 
-        var specialLabels = entries
-            .SelectMany(entry => entry.SpecialCategories)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(label => label, StringComparer.CurrentCulture);
-        foreach (var label in specialLabels)
+        var specials = new[]
+        {
+            (GatheringCategoryKind.Collectable, "SpecialCollectable"),
+            (GatheringCategoryKind.Folklore, "SpecialFolklore"),
+            (GatheringCategoryKind.SideQuest, "SpecialSideQuest")
+        };
+        foreach (var (kind, key) in specials)
         {
             result.Add(new GatheringCategory
             {
-                Key = "special:" + label,
-                Label = label,
+                Key = "special:" + kind,
+                Label = Text(key),
                 IsSpecial = true,
-                SpecialLabel = label
-            });
-        }
-
-        if (entries.Any(entry => entry.IsCollectable))
-        {
-            result.Add(new GatheringCategory
-            {
-                Key = "collectable",
-                Label = Text("CollectableTag"),
-                IsSpecial = true,
-                CollectableOnly = true
+                Kind = kind
             });
         }
 
@@ -744,16 +751,29 @@ public sealed class GatheringNotebook : OmniModuleBase
     }
 
     internal static bool IsSpecialEntry(GatheringEntry entry) =>
-        entry.PrimarySpecial.Length > 0 || entry.IsCollectable;
+        entry.IsCollectable || entry.InFolklore || entry.InSideQuest;
 
-    private void SwitchBranch(GatheringBranch branch)
+    private void SwitchJob(int job)
     {
-        if (activeBranch == branch)
+        if (activeJob == job)
         {
             return;
         }
 
-        activeBranch = branch;
+        activeJob = job;
+        activeType = job * 2;
+        selectedCategoryKey = string.Empty;
+        detailEntry = null;
+    }
+
+    private void SwitchType(int type)
+    {
+        if (activeType == type)
+        {
+            return;
+        }
+
+        activeType = type;
         selectedCategoryKey = string.Empty;
         detailEntry = null;
     }
@@ -770,8 +790,8 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         presets.AddRange(BuildPresets(
-            catalog.Mining,
-            catalog.Botany,
+            catalog.ForJob(0).ToList(),
+            catalog.ForJob(1).ToList(),
             Text("Mining"),
             Text("Botany"),
             Text("PresetName"),
@@ -1023,12 +1043,7 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         var loaded = DalamudServices.PlayerState.IsLoaded;
-        foreach (var entry in catalog.Mining)
-        {
-            entry.Collected = loaded && IsAnyGathered(entry);
-        }
-
-        foreach (var entry in catalog.Botany)
+        foreach (var entry in catalog.All)
         {
             entry.Collected = loaded && IsAnyGathered(entry);
         }
@@ -1108,12 +1123,9 @@ public sealed class GatheringNotebook : OmniModuleBase
         return result;
     }
 
-    internal static GatheringBranch ClassifyGatheringType(uint gatheringTypeId) => gatheringTypeId switch
-    {
-        0 or 1 => GatheringBranch.Mining,
-        2 or 3 => GatheringBranch.Botany,
-        _ => GatheringBranch.None
-    };
+    internal static bool IsGatheringJobType(uint gatheringTypeId) => gatheringTypeId <= 3;
+
+    internal static int JobOfGatheringType(uint gatheringTypeId) => gatheringTypeId <= 1 ? 0 : 1;
 
     internal static int CompareEntries(GatheringEntry left, GatheringEntry right)
     {
@@ -1135,8 +1147,14 @@ public sealed class GatheringNotebook : OmniModuleBase
 
     internal sealed class GatheringCatalog
     {
-        public List<GatheringEntry> Mining { get; } = [];
-        public List<GatheringEntry> Botany { get; } = [];
+        // 索引 = GatheringType: 0 采掘, 1 碎石, 2 采伐, 3 割草
+        public List<GatheringEntry>[] Groups { get; } = [new(), new(), new(), new()];
+
+        public List<GatheringEntry> ForType(int type) => Groups[type];
+
+        public IEnumerable<GatheringEntry> ForJob(int job) => Groups[job * 2].Concat(Groups[job * 2 + 1]);
+
+        public IEnumerable<GatheringEntry> All => Groups.SelectMany(group => group);
 
         public static GatheringCatalog Build()
         {
@@ -1162,10 +1180,17 @@ public sealed class GatheringNotebook : OmniModuleBase
 
             var liveBases = new HashSet<uint>();
             var baseNodes = new Dictionary<uint, List<GatheringNodeInfo>>();
-            var baseSpecials = new Dictionary<uint, HashSet<string>>();
+            var baseFolklore = new HashSet<uint>();
+            var baseSideQuest = new HashSet<uint>();
             foreach (var point in LuminaGetter.Get<GatheringPoint>())
             {
-                if (point.TerritoryType.RowId <= 1)
+                var subCategoryId = point.GatheringSubCategory.RowId;
+                GatheringSubCategory subCategory = default;
+                var hasSubCategory = subCategoryId != 0 && subCategories.TryGetValue(subCategoryId, out subCategory);
+                var isSideQuest = hasSubCategory && subCategory.Division == 0 && subCategory.Quest.RowId != 0;
+
+                // 带任务编号的支线任务节点没有常规地图（territory = 1），也要收进来。
+                if (point.TerritoryType.RowId <= 1 && !isSideQuest)
                 {
                     continue;
                 }
@@ -1183,6 +1208,15 @@ public sealed class GatheringNotebook : OmniModuleBase
 
                 liveBases.Add(baseId);
 
+                if (isSideQuest)
+                {
+                    baseSideQuest.Add(baseId);
+                }
+                else if (hasSubCategory && subCategory.Division >= 2000)
+                {
+                    baseFolklore.Add(baseId);
+                }
+
                 if (!point.TerritoryType.TryGetValue(out var territoryRow))
                 {
                     continue;
@@ -1194,6 +1228,11 @@ public sealed class GatheringNotebook : OmniModuleBase
                 var place = point.PlaceName.TryGetValue(out var pointPlaceName)
                     ? pointPlaceName.Name.ExtractText()
                     : string.Empty;
+                if (territory.Length == 0 && place.Length == 0)
+                {
+                    continue;
+                }
+
                 var node = new GatheringNodeInfo
                 {
                     Territory = territory,
@@ -1210,35 +1249,10 @@ public sealed class GatheringNotebook : OmniModuleBase
                 {
                     nodes.Add(node);
                 }
-
-                var subCategoryId = point.GatheringSubCategory.RowId;
-                if (subCategoryId == 0 || !subCategories.TryGetValue(subCategoryId, out var subCategory) ||
-                    subCategory.Division < 2000)
-                {
-                    continue;
-                }
-
-                var label = subCategory.FolkloreBook.ExtractText();
-                if (string.IsNullOrWhiteSpace(label) && subCategory.Item.TryGetValue(out var bookItem))
-                {
-                    label = bookItem.Name.ExtractText();
-                }
-
-                if (string.IsNullOrWhiteSpace(label))
-                {
-                    continue;
-                }
-
-                if (!baseSpecials.TryGetValue(baseId, out var specials))
-                {
-                    baseSpecials[baseId] = specials = new HashSet<string>(StringComparer.Ordinal);
-                }
-
-                specials.Add(label);
             }
 
             // 只保留有常规采集点的物品（采集笔记/成就只统计这些），并去掉活动物品。
-            var groups = new Dictionary<(uint ItemId, GatheringBranch Branch), GatheringEntryBuilder>();
+            var groups = new Dictionary<(uint ItemId, int TypeId), GatheringEntryBuilder>();
             foreach (var pointBase in pointBases.Values)
             {
                 if (!liveBases.Contains(pointBase.RowId))
@@ -1246,14 +1260,15 @@ public sealed class GatheringNotebook : OmniModuleBase
                     continue;
                 }
 
-                var branch = ClassifyGatheringType(pointBase.GatheringType.RowId);
-                if (branch == GatheringBranch.None)
+                var typeId = (int)pointBase.GatheringType.RowId;
+                if (!IsGatheringJobType(pointBase.GatheringType.RowId))
                 {
                     continue;
                 }
 
                 var nodes = baseNodes.GetValueOrDefault(pointBase.RowId);
-                var specials = baseSpecials.GetValueOrDefault(pointBase.RowId);
+                var folklore = baseFolklore.Contains(pointBase.RowId);
+                var sideQuest = baseSideQuest.Contains(pointBase.RowId);
                 for (var index = 0; index < pointBase.Item.Count; index++)
                 {
                     var gatheringItemId = pointBase.Item[index].RowId;
@@ -1269,7 +1284,7 @@ public sealed class GatheringNotebook : OmniModuleBase
                         continue;
                     }
 
-                    var key = (itemId, branch);
+                    var key = (itemId, typeId);
                     if (!groups.TryGetValue(key, out var builder))
                     {
                         if (!TryDescribeItem(gatheringItem, out var name, out var iconId, out var isCollectable) ||
@@ -1287,6 +1302,9 @@ public sealed class GatheringNotebook : OmniModuleBase
                         };
                     }
 
+                    builder.InFolklore |= folklore;
+                    builder.InSideQuest |= sideQuest;
+
                     if (nodes != null)
                     {
                         foreach (var node in nodes)
@@ -1295,14 +1313,6 @@ public sealed class GatheringNotebook : OmniModuleBase
                             {
                                 builder.Nodes.Add(node);
                             }
-                        }
-                    }
-
-                    if (specials != null)
-                    {
-                        foreach (var special in specials)
-                        {
-                            builder.SpecialCategories.Add(special);
                         }
                     }
 
@@ -1337,26 +1347,20 @@ public sealed class GatheringNotebook : OmniModuleBase
                     Level = level,
                     Stars = stars,
                     IsCollectable = builder.IsCollectable,
+                    InFolklore = builder.InFolklore,
+                    InSideQuest = builder.InSideQuest,
                     GatheringItemIds = builder.GatheringItemIds.ToArray(),
-                    Nodes = builder.Nodes.ToArray(),
-                    SpecialCategories = builder.SpecialCategories.ToArray(),
-                    PrimarySpecial = builder.SpecialCategories
-                        .OrderBy(label => label, StringComparer.Ordinal)
-                        .FirstOrDefault() ?? string.Empty
+                    Nodes = builder.Nodes.ToArray()
                 };
 
-                if (key.Branch == GatheringBranch.Mining)
-                {
-                    result.Mining.Add(entry);
-                }
-                else
-                {
-                    result.Botany.Add(entry);
-                }
+                result.Groups[key.TypeId].Add(entry);
             }
 
-            result.Mining.Sort(CompareEntries);
-            result.Botany.Sort(CompareEntries);
+            foreach (var group in result.Groups)
+            {
+                group.Sort(CompareEntries);
+            }
+
             return result;
         }
 
@@ -1390,10 +1394,10 @@ internal sealed class GatheringEntry
     public byte Level { get; init; }
     public byte Stars { get; init; }
     public bool IsCollectable { get; init; }
+    public bool InFolklore { get; init; }
+    public bool InSideQuest { get; init; }
     public IReadOnlyList<uint> GatheringItemIds { get; init; } = [];
     public IReadOnlyList<GatheringNodeInfo> Nodes { get; init; } = [];
-    public IReadOnlyList<string> SpecialCategories { get; init; } = [];
-    public string PrimarySpecial { get; init; } = string.Empty;
     public bool Collected { get; set; }
     public bool Selected { get; set; }
 }
@@ -1406,6 +1410,14 @@ internal sealed class GatheringNodeInfo
     public string Key => $"{Territory}|{Place}|{Level}";
 }
 
+internal enum GatheringCategoryKind
+{
+    LevelRange,
+    Collectable,
+    Folklore,
+    SideQuest
+}
+
 internal sealed class GatheringCategory
 {
     public string Key { get; init; } = string.Empty;
@@ -1413,23 +1425,15 @@ internal sealed class GatheringCategory
     public byte MinLevel { get; init; }
     public byte MaxLevel { get; init; }
     public bool IsSpecial { get; init; }
-    public bool CollectableOnly { get; init; }
-    public string SpecialLabel { get; init; } = string.Empty;
+    public GatheringCategoryKind Kind { get; init; }
 
-    public bool Matches(GatheringEntry entry)
+    public bool Matches(GatheringEntry entry) => Kind switch
     {
-        if (CollectableOnly)
-        {
-            return entry.IsCollectable;
-        }
-
-        if (SpecialLabel.Length > 0)
-        {
-            return entry.SpecialCategories.Contains(SpecialLabel, StringComparer.Ordinal);
-        }
-
-        return MaxLevel > 0 && entry.Level >= MinLevel && entry.Level <= MaxLevel;
-    }
+        GatheringCategoryKind.Collectable => entry.IsCollectable,
+        GatheringCategoryKind.Folklore => entry.InFolklore,
+        GatheringCategoryKind.SideQuest => entry.InSideQuest,
+        _ => entry.Level >= MinLevel && entry.Level <= MaxLevel
+    };
 }
 
 internal sealed class GatheringEntryBuilder
@@ -1438,10 +1442,11 @@ internal sealed class GatheringEntryBuilder
     public string Name = string.Empty;
     public uint IconId;
     public bool IsCollectable;
+    public bool InFolklore;
+    public bool InSideQuest;
     public uint RepresentativeGatheringItemId;
     public List<uint> GatheringItemIds { get; } = [];
     public List<GatheringNodeInfo> Nodes { get; } = [];
-    public HashSet<string> SpecialCategories { get; } = new(StringComparer.Ordinal);
 }
 
 internal sealed class GbrPreset(string name, string description, List<uint> itemIds, string base64)
@@ -1474,12 +1479,4 @@ internal sealed class GbrPresetPayload
     public bool Enabled { get; set; }
     public bool Fallback { get; set; }
     public bool RemoveCompletedItems { get; set; }
-}
-
-[Flags]
-internal enum GatheringBranch
-{
-    None = 0,
-    Mining = 1,
-    Botany = 2
 }
