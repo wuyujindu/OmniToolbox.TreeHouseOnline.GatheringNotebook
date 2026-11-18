@@ -74,10 +74,11 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["ClearSelection"] = "清除选择",
             ["SelectedCount"] = "已选 {0} 项",
             ["ExportPresets"] = "导出 GBR 预设",
-            ["ExportPresetsHelp"] = "把选中物品按每 100 项生成预设并直接写入 GBR 的自动采集列表 (同名预设会被覆盖), GBR 会自动重新加载",
+            ["ExportPresetsHelp"] = "把选中物品按每 100 项生成预设并写入 GBR 的自动采集列表文件; GBR 只在启动时读取该文件, 写入后要重载 GBR 或重启游戏才看得到",
+            ["GbrWritten"] = "已写入 {0} 个预设到 GBR 列表文件; 重载 GBR 或重启游戏后生效",
+            ["GbrReloadHint"] = "GBR 只在启动时读列表文件: /xlplugins 里禁用再启用 GatherBuddyReborn, 或想立刻生效就用「复制预设」在 GBR 里从剪贴板导入",
             ["CopyPresets"] = "复制预设",
             ["CopyPresetsHelp"] = "逐个复制预设, 到 GBR 里用「从剪贴板导入」(备用方式)",
-            ["GbrWritten"] = "已写入 {0} 个预设到 GBR",
             ["GbrWriteFailed"] = "写入 GBR 列表失败: {0}",
             ["RuriOrder"] = "生成 Ruri 订单",
             ["RuriOrderHelp"] = "把选中的未采集物生成 Ruri 订单, 打开 Ruri 并做计划检查 (不会开始执行)",
@@ -1003,6 +1004,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             File.WriteAllText(temp, json);
             File.Move(temp, path, true);
             DalamudServices.ChatGUI.Print(Text("GbrWritten", presets.Count));
+            DalamudServices.ChatGUI.Print(Text("GbrReloadHint"));
         }
         catch (Exception exception)
         {
