@@ -42,7 +42,15 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["Botany"] = "园艺",
             ["MiningProgress"] = "采矿 已采集 {0} / {1}",
             ["BotanyProgress"] = "园艺 已采集 {0} / {1}",
-            ["BranchTab"] = "{0} · 未采集 {1}",
+            ["LevelSection"] = "采集等级",
+            ["SpecialSection"] = "特殊分类",
+            ["CollectableCategory"] = "收藏品",
+            ["DetailTitle"] = "采集点",
+            ["NoNodes"] = "没有常规采集点 (GBR 无法自动采集)",
+            ["NodeLine"] = "{0} · {1} {2}级",
+            ["CollectableTag"] = "收藏品",
+            ["EventItemTag"] = "活动物品",
+            ["StarsTag"] = "★ {0}",
             ["Refresh"] = "刷新",
             ["RefreshHelp"] = "重新读取采集笔记的完成情况",
             ["ShowCollected"] = "显示已采集",
@@ -82,6 +90,9 @@ public sealed class GatheringNotebook : OmniModuleBase
     private string search = string.Empty;
     private readonly List<GatheringEntry> filteredEntries = [];
     private readonly List<GbrPreset> presets = [];
+    private GatheringBranch activeBranch = GatheringBranch.Mining;
+    private string selectedCategoryKey = string.Empty;
+    private GatheringEntry? detailEntry;
     private string copiedPreset = string.Empty;
     private int skippedEventItems;
     private int skippedNoNode;
@@ -109,7 +120,7 @@ public sealed class GatheringNotebook : OmniModuleBase
         var changed = DrawToolbar();
         DrawProgress();
         ImGui.Spacing();
-        DrawBranchTabs();
+        DrawBody();
         DrawPresetPopup();
         return changed;
     }
@@ -200,40 +211,103 @@ public sealed class GatheringNotebook : OmniModuleBase
         ImGui.TextUnformatted(Text("BotanyProgress", botanyCollected, catalog.Botany.Count));
     }
 
-    private void DrawBranchTabs()
+    private void DrawBody()
     {
         if (catalog == null)
         {
             return;
         }
 
-        using var tabs = ImRaii.TabBar("##gatheringNotebookTabs");
-        if (!tabs)
+        var entries = activeBranch == GatheringBranch.Mining ? catalog.Mining : catalog.Botany;
+        var categories = BuildCategories(entries);
+        if (categories.Count == 0)
         {
+            ImGui.TextUnformatted(Text("NoMatch"));
             return;
         }
 
-        using (var miningTab = ImRaii.TabItem(Text("BranchTab", Text("Mining"), CountPending(catalog.Mining))))
+        if (categories.All(category => category.Key != selectedCategoryKey))
         {
-            if (miningTab)
+            selectedCategoryKey = categories[0].Key;
+        }
+
+        var category = categories.First(item => item.Key == selectedCategoryKey);
+        var height = OmniTheme.Scale(430f);
+
+        using (var sidebar = ImRaii.Child("##gatheringNotebookSidebar", new Vector2(OmniTheme.Scale(185f), height), true))
+        {
+            if (sidebar)
             {
-                DrawBranch(catalog.Mining, "##gatheringNotebookMiningTable");
+                DrawSidebar(entries, categories);
             }
         }
 
-        using (var botanyTab = ImRaii.TabItem(Text("BranchTab", Text("Botany"), CountPending(catalog.Botany))))
+        ImGui.SameLine(0f, OmniTheme.Scale(8f));
+        using (var list = ImRaii.Child("##gatheringNotebookList", new Vector2(OmniTheme.Scale(345f), height), true))
         {
-            if (botanyTab)
+            if (list)
             {
-                DrawBranch(catalog.Botany, "##gatheringNotebookBotanyTable");
+                DrawList(entries, category);
+            }
+        }
+
+        ImGui.SameLine(0f, OmniTheme.Scale(8f));
+        using (var detail = ImRaii.Child("##gatheringNotebookDetail", new Vector2(-1f, height), true))
+        {
+            if (detail)
+            {
+                DrawDetail();
             }
         }
     }
 
-    private void DrawBranch(List<GatheringEntry> entries, string tableId)
+    private void DrawSidebar(List<GatheringEntry> entries, List<GatheringCategory> categories)
+    {
+        if (OmniControls.SmallButton(Text("Mining") + "##gatheringNotebookMining", activeBranch == GatheringBranch.Mining))
+        {
+            SwitchBranch(GatheringBranch.Mining);
+        }
+
+        ImGui.SameLine(0f, OmniTheme.Scale(6f));
+        if (OmniControls.SmallButton(Text("Botany") + "##gatheringNotebookBotany", activeBranch == GatheringBranch.Botany))
+        {
+            SwitchBranch(GatheringBranch.Botany);
+        }
+
+        ImGui.Separator();
+        ImGui.TextUnformatted(Text("LevelSection"));
+        foreach (var category in categories.Where(item => !item.IsSpecial))
+        {
+            DrawCategoryRow(entries, category);
+        }
+
+        if (!categories.Any(item => item.IsSpecial))
+        {
+            return;
+        }
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted(Text("SpecialSection"));
+        foreach (var category in categories.Where(item => item.IsSpecial))
+        {
+            DrawCategoryRow(entries, category);
+        }
+    }
+
+    private void DrawCategoryRow(List<GatheringEntry> entries, GatheringCategory category)
+    {
+        var pending = entries.Count(entry => !entry.Collected && category.Matches(entry));
+        var label = $"{category.Label} ({pending})##{category.Key}";
+        if (ImGui.Selectable(label, category.Key == selectedCategoryKey))
+        {
+            selectedCategoryKey = category.Key;
+        }
+    }
+
+    private void DrawList(List<GatheringEntry> entries, GatheringCategory category)
     {
         filteredEntries.Clear();
-        filteredEntries.AddRange(Filter(entries, config.ShowCollected, search));
+        filteredEntries.AddRange(Filter(entries, config.ShowCollected, search, category));
 
         if (filteredEntries.Count == 0)
         {
@@ -241,7 +315,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             return;
         }
 
-        if (OmniControls.SmallButton(Text("SelectAll") + "##selectAll" + tableId, false))
+        if (OmniControls.SmallButton(Text("SelectAll") + "##gatheringNotebookSelectAll", false))
         {
             foreach (var entry in filteredEntries)
             {
@@ -250,7 +324,7 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         ImGui.SameLine(0f, OmniTheme.Scale(6f));
-        if (OmniControls.SmallButton(Text("ClearSelection") + "##clearSelection" + tableId, false))
+        if (OmniControls.SmallButton(Text("ClearSelection") + "##gatheringNotebookClearSelection", false))
         {
             foreach (var entry in filteredEntries)
             {
@@ -258,27 +332,26 @@ public sealed class GatheringNotebook : OmniModuleBase
             }
         }
 
-        ImGui.SameLine(0f, OmniTheme.Scale(12f));
+        ImGui.SameLine(0f, OmniTheme.Scale(10f));
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted(Text("SelectedCount", entries.Count(entry => entry.Selected)));
 
         using var table = ImRaii.Table(
-            tableId,
-            4,
+            "##gatheringNotebookItems",
+            3,
             ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY,
-            new Vector2(-1f, OmniTheme.Scale(320f)));
+            new Vector2(-1f, -1f));
         if (!table)
         {
             return;
         }
 
-        ImGui.TableSetupColumn("##select", ImGuiTableColumnFlags.WidthFixed, OmniTheme.Scale(34f));
+        ImGui.TableSetupColumn("##select", ImGuiTableColumnFlags.WidthFixed, OmniTheme.Scale(30f));
         ImGui.TableSetupColumn(Text("Name"), ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn(Text("Level"), ImGuiTableColumnFlags.WidthFixed, OmniTheme.Scale(70f));
-        ImGui.TableSetupColumn(Text("Stars"), ImGuiTableColumnFlags.WidthFixed, OmniTheme.Scale(70f));
+        ImGui.TableSetupColumn(Text("Level"), ImGuiTableColumnFlags.WidthFixed, OmniTheme.Scale(60f));
         ImGui.TableHeadersRow();
 
-        var iconSize = OmniTheme.Scale(22f);
+        var iconSize = OmniTheme.Scale(20f);
         foreach (var entry in filteredEntries)
         {
             ImGui.TableNextRow();
@@ -300,26 +373,137 @@ public sealed class GatheringNotebook : OmniModuleBase
                 ImGui.GetWindowDrawList().AddImage(texture.Handle, iconPosition, iconPosition + new Vector2(iconSize));
             }
 
-            ImGui.AlignTextToFramePadding();
             var color = entry.Collected ? new Vector4(0.62f, 0.62f, 0.66f, 1f) : OmniTheme.Tokens.Text;
             using (ImRaii.PushColor(ImGuiCol.Text, color, true))
             {
-                ImGui.TextUnformatted(entry.Name);
+                if (ImGui.Selectable($"{entry.Name}##gatheringNotebookItem", detailEntry == entry))
+                {
+                    detailEntry = entry;
+                }
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                detailEntry = entry;
             }
 
             ImGui.TableNextColumn();
             ImGui.AlignTextToFramePadding();
             ImGui.TextUnformatted(entry.Level.ToString(CultureInfo.InvariantCulture));
 
-            ImGui.TableNextColumn();
-            ImGui.AlignTextToFramePadding();
-            ImGui.TextUnformatted(entry.Stars == 0 ? "—" : new string('★', entry.Stars));
-
             ImGui.PopID();
         }
     }
 
-    private static int CountPending(List<GatheringEntry> entries) => entries.Count(entry => !entry.Collected);
+    private void DrawDetail()
+    {
+        var entry = detailEntry;
+        if (entry == null)
+        {
+            ImGui.TextUnformatted(Text("NoSelection"));
+            return;
+        }
+
+        ImGui.TextUnformatted(entry.Name);
+        var tags = new List<string>();
+        if (entry.IsCollectable)
+        {
+            tags.Add(Text("CollectableTag"));
+        }
+
+        if (entry.IsEventItem)
+        {
+            tags.Add(Text("EventItemTag"));
+        }
+
+        if (tags.Count > 0)
+        {
+            ImGui.SameLine(0f, OmniTheme.Scale(8f));
+            ImGui.TextUnformatted($"[{string.Join(", ", tags)}]");
+        }
+
+        var levelLine = $"{Text("Level")} {entry.Level.ToString(CultureInfo.InvariantCulture)}";
+        if (entry.Stars > 0)
+        {
+            levelLine += $"  {Text("StarsTag", entry.Stars)}";
+        }
+
+        ImGui.TextUnformatted(levelLine);
+        ImGui.Separator();
+        ImGui.TextUnformatted(Text("DetailTitle"));
+
+        if (entry.Nodes.Count == 0)
+        {
+            ImGui.TextWrapped(Text("NoNodes"));
+            return;
+        }
+
+        foreach (var node in entry.Nodes.Take(10))
+        {
+            ImGui.TextWrapped(Text("NodeLine", node.Territory, node.Place, node.Level));
+        }
+    }
+
+    private List<GatheringCategory> BuildCategories(List<GatheringEntry> entries)
+    {
+        var result = new List<GatheringCategory>();
+        for (var max = 100; max > 0; max -= 5)
+        {
+            var min = max - 4;
+            if (entries.All(entry => entry.Level < min || entry.Level > max))
+            {
+                continue;
+            }
+
+            result.Add(new GatheringCategory
+            {
+                Key = $"level:{min}-{max}",
+                Label = $"{min}-{max}",
+                MinLevel = (byte)min,
+                MaxLevel = (byte)max
+            });
+        }
+
+        if (entries.Any(entry => entry.IsCollectable))
+        {
+            result.Add(new GatheringCategory
+            {
+                Key = "collectable",
+                Label = Text("CollectableCategory"),
+                IsSpecial = true,
+                CollectableOnly = true
+            });
+        }
+
+        var books = entries
+            .SelectMany(entry => entry.FolkloreBooks)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(book => book, StringComparer.CurrentCulture);
+        foreach (var book in books)
+        {
+            result.Add(new GatheringCategory
+            {
+                Key = "folklore:" + book,
+                Label = book,
+                IsSpecial = true,
+                FolkloreBook = book
+            });
+        }
+
+        return result;
+    }
+
+    private void SwitchBranch(GatheringBranch branch)
+    {
+        if (activeBranch == branch)
+        {
+            return;
+        }
+
+        activeBranch = branch;
+        selectedCategoryKey = string.Empty;
+        detailEntry = null;
+    }
 
     internal const int GbrPresetItemLimit = 100;
     internal const byte GbrPresetVersion = 6;
@@ -545,12 +729,21 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
     }
 
-    internal static List<GatheringEntry> Filter(IEnumerable<GatheringEntry> entries, bool showCollected, string query)
+    internal static List<GatheringEntry> Filter(
+        IEnumerable<GatheringEntry> entries,
+        bool showCollected,
+        string query,
+        GatheringCategory? category)
     {
         var search = (query ?? string.Empty).Trim();
         var result = new List<GatheringEntry>();
         foreach (var entry in entries)
         {
+            if (category != null && !category.Matches(entry))
+            {
+                continue;
+            }
+
             if (!showCollected && entry.Collected)
             {
                 continue;
@@ -612,8 +805,16 @@ public sealed class GatheringNotebook : OmniModuleBase
                 pointBases[row.RowId] = row;
             }
 
-            // 有常规采集点的 base：GBR 只把这些物品当作可自动采集。
+            // 有常规采集点的 base：GBR 只把这些物品当作可自动采集；顺便记录采集点与传承录分类。
+            var subCategories = new Dictionary<uint, GatheringSubCategory>();
+            foreach (var row in LuminaGetter.Get<GatheringSubCategory>())
+            {
+                subCategories[row.RowId] = row;
+            }
+
             var liveBases = new HashSet<uint>();
+            var baseNodes = new Dictionary<uint, List<GatheringNodeInfo>>();
+            var baseFolklore = new Dictionary<uint, HashSet<string>>();
             foreach (var point in LuminaGetter.Get<GatheringPoint>())
             {
                 if (point.TerritoryType.RowId <= 1)
@@ -633,6 +834,60 @@ public sealed class GatheringNotebook : OmniModuleBase
                 }
 
                 liveBases.Add(baseId);
+
+                if (!point.TerritoryType.TryGetValue(out var territoryRow))
+                {
+                    continue;
+                }
+
+                var territory = territoryRow.PlaceName.TryGetValue(out var placeNameRow)
+                    ? placeNameRow.Name.ExtractText()
+                    : string.Empty;
+                var place = point.PlaceName.TryGetValue(out var pointPlaceName)
+                    ? pointPlaceName.Name.ExtractText()
+                    : string.Empty;
+                var node = new GatheringNodeInfo
+                {
+                    Territory = territory,
+                    Place = place,
+                    Level = liveBase.GatheringLevel
+                };
+
+                if (!baseNodes.TryGetValue(baseId, out var nodes))
+                {
+                    baseNodes[baseId] = nodes = [];
+                }
+
+                if (!nodes.Any(existing => existing.Key == node.Key))
+                {
+                    nodes.Add(node);
+                }
+
+                var subCategoryId = point.GatheringSubCategory.RowId;
+                if (subCategoryId == 0 || !subCategories.TryGetValue(subCategoryId, out var subCategory) ||
+                    subCategory.Division < 2000)
+                {
+                    continue;
+                }
+
+                var book = subCategory.FolkloreBook.ExtractText();
+                if (string.IsNullOrWhiteSpace(book) && subCategory.Item.TryGetValue(out var bookItem))
+                {
+                    book = bookItem.Name.ExtractText();
+                }
+
+                // 只把传承录当作特殊分类；重建伊修加德、天钢工具等子分类归到收藏品里。
+                if (string.IsNullOrWhiteSpace(book) || !book.Contains("传承录", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!baseFolklore.TryGetValue(baseId, out var books))
+                {
+                    baseFolklore[baseId] = books = new HashSet<string>(StringComparer.Ordinal);
+                }
+
+                books.Add(book);
             }
 
             // 按 (物品, 分支) 合并：同一物品的多个 GatheringItem 行只保留一条，避免列表重复。
@@ -646,6 +901,8 @@ public sealed class GatheringNotebook : OmniModuleBase
                 }
 
                 var live = liveBases.Contains(pointBase.RowId);
+                var nodes = baseNodes.GetValueOrDefault(pointBase.RowId);
+                var books = baseFolklore.GetValueOrDefault(pointBase.RowId);
                 for (var index = 0; index < pointBase.Item.Count; index++)
                 {
                     var gatheringItemId = pointBase.Item[index].RowId;
@@ -664,7 +921,7 @@ public sealed class GatheringNotebook : OmniModuleBase
                     var key = (itemId, branch);
                     if (!groups.TryGetValue(key, out var builder))
                     {
-                        if (!TryDescribeItem(gatheringItem, out var name, out var iconId, out var isEventItem) ||
+                        if (!TryDescribeItem(gatheringItem, out var name, out var iconId, out var isEventItem, out var isCollectable) ||
                             string.IsNullOrWhiteSpace(name))
                         {
                             continue;
@@ -675,11 +932,31 @@ public sealed class GatheringNotebook : OmniModuleBase
                             ItemId = itemId,
                             Name = name,
                             IconId = iconId,
-                            IsEventItem = isEventItem
+                            IsEventItem = isEventItem,
+                            IsCollectable = isCollectable
                         };
                     }
 
                     builder.HasNode |= live;
+                    if (nodes != null)
+                    {
+                        foreach (var node in nodes)
+                        {
+                            if (!builder.Nodes.Any(existing => existing.Key == node.Key))
+                            {
+                                builder.Nodes.Add(node);
+                            }
+                        }
+                    }
+
+                    if (books != null)
+                    {
+                        foreach (var book in books)
+                        {
+                            builder.FolkloreBooks.Add(book);
+                        }
+                    }
+
                     if (!builder.GatheringItemIds.Contains(gatheringItemId))
                     {
                         builder.GatheringItemIds.Add(gatheringItemId);
@@ -711,8 +988,11 @@ public sealed class GatheringNotebook : OmniModuleBase
                     Level = level,
                     Stars = stars,
                     IsEventItem = builder.IsEventItem,
+                    IsCollectable = builder.IsCollectable,
                     HasNode = builder.HasNode,
-                    GatheringItemIds = builder.GatheringItemIds.ToArray()
+                    GatheringItemIds = builder.GatheringItemIds.ToArray(),
+                    Nodes = builder.Nodes.ToArray(),
+                    FolkloreBooks = builder.FolkloreBooks.ToArray()
                 };
 
                 if (key.Branch == GatheringBranch.Mining)
@@ -730,13 +1010,20 @@ public sealed class GatheringNotebook : OmniModuleBase
             return result;
         }
 
-        internal static bool TryDescribeItem(GatheringItem gatheringItem, out string name, out uint iconId, out bool isEventItem)
+        internal static bool TryDescribeItem(
+            GatheringItem gatheringItem,
+            out string name,
+            out uint iconId,
+            out bool isEventItem,
+            out bool isCollectable)
         {
             isEventItem = false;
+            isCollectable = false;
             if (gatheringItem.Item.TryGetValue<Item>(out var item))
             {
                 name = item.Name.ExtractText();
                 iconId = item.Icon;
+                isCollectable = item.IsCollectable;
                 return !string.IsNullOrWhiteSpace(name);
             }
 
@@ -763,10 +1050,47 @@ internal sealed class GatheringEntry
     public byte Level { get; init; }
     public byte Stars { get; init; }
     public bool IsEventItem { get; init; }
+    public bool IsCollectable { get; init; }
     public bool HasNode { get; init; }
     public IReadOnlyList<uint> GatheringItemIds { get; init; } = [];
+    public IReadOnlyList<GatheringNodeInfo> Nodes { get; init; } = [];
+    public IReadOnlyList<string> FolkloreBooks { get; init; } = [];
     public bool Collected { get; set; }
     public bool Selected { get; set; }
+}
+
+internal sealed class GatheringNodeInfo
+{
+    public string Territory { get; init; } = string.Empty;
+    public string Place { get; init; } = string.Empty;
+    public byte Level { get; init; }
+    public string Key => $"{Territory}|{Place}|{Level}";
+}
+
+internal sealed class GatheringCategory
+{
+    public string Key { get; init; } = string.Empty;
+    public string Label { get; init; } = string.Empty;
+    public byte MinLevel { get; init; }
+    public byte MaxLevel { get; init; }
+    public bool IsSpecial { get; init; }
+    public bool CollectableOnly { get; init; }
+    public string FolkloreBook { get; init; } = string.Empty;
+
+    public bool Matches(GatheringEntry entry)
+    {
+        if (CollectableOnly)
+        {
+            return entry.IsCollectable;
+        }
+
+        if (FolkloreBook.Length > 0)
+        {
+            return entry.FolkloreBooks.Contains(FolkloreBook, StringComparer.Ordinal);
+        }
+
+        return MaxLevel > 0 && entry.Level >= MinLevel && entry.Level <= MaxLevel;
+    }
 }
 
 internal sealed class GatheringEntryBuilder
@@ -775,9 +1099,12 @@ internal sealed class GatheringEntryBuilder
     public string Name = string.Empty;
     public uint IconId;
     public bool IsEventItem;
+    public bool IsCollectable;
     public bool HasNode;
     public uint RepresentativeGatheringItemId;
     public List<uint> GatheringItemIds { get; } = [];
+    public List<GatheringNodeInfo> Nodes { get; } = [];
+    public HashSet<string> FolkloreBooks { get; } = new(StringComparer.Ordinal);
 }
 
 internal sealed class GbrPreset(string name, string description, List<uint> itemIds, string base64)

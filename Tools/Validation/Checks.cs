@@ -84,11 +84,26 @@ internal static class Checks
                 new GatheringEntry { Name = "枫木原木", Level = 10 }
             };
 
-            Expect(GatheringNotebook.Filter(entries, false, string.Empty).Count == 2);
-            Expect(GatheringNotebook.Filter(entries, true, string.Empty).Count == 3);
-            Expect(GatheringNotebook.Filter(entries, false, "矿").Count == 1);
-            Expect(GatheringNotebook.Filter(entries, false, "  矿  ").Count == 1);
-            Expect(GatheringNotebook.Filter(entries, false, "不存在").Count == 0);
+            Expect(GatheringNotebook.Filter(entries, false, string.Empty, null).Count == 2);
+            Expect(GatheringNotebook.Filter(entries, true, string.Empty, null).Count == 3);
+            Expect(GatheringNotebook.Filter(entries, false, "矿", null).Count == 1);
+            Expect(GatheringNotebook.Filter(entries, false, "  矿  ", null).Count == 1);
+            Expect(GatheringNotebook.Filter(entries, false, "不存在", null).Count == 0);
+
+            var levelCategory = new GatheringCategory { Key = "level:10-14", MinLevel = 10, MaxLevel = 14 };
+            var collectableCategory = new GatheringCategory { Key = "collectable", IsSpecial = true, CollectableOnly = true };
+            var folkloreCategory = new GatheringCategory { Key = "folklore:x", IsSpecial = true, FolkloreBook = "矿物传承录·龙堡篇" };
+            var categorized = new[]
+            {
+                new GatheringEntry { Name = "低级矿", Level = 10 },
+                new GatheringEntry { Name = "高级矿", Level = 20 },
+                new GatheringEntry { Name = "收藏矿", Level = 12, IsCollectable = true },
+                new GatheringEntry { Name = "传承矿", Level = 12, FolkloreBooks = ["矿物传承录·龙堡篇"] }
+            };
+            Expect(GatheringNotebook.Filter(categorized, true, string.Empty, levelCategory).Count == 3);
+            Expect(GatheringNotebook.Filter(categorized, true, string.Empty, collectableCategory).Count == 1);
+            Expect(GatheringNotebook.Filter(categorized, true, string.Empty, folkloreCategory).Count == 1);
+            Expect(GatheringNotebook.Filter(categorized, true, "矿", levelCategory).Count == 3);
 
             var sorted = entries.ToList();
             sorted.Sort(GatheringNotebook.CompareEntries);
