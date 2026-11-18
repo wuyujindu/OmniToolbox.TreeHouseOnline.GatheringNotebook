@@ -441,19 +441,34 @@ public sealed class GatheringNotebook : OmniModuleBase
             var open = ImGui.CollapsingHeader(Text(key) + id, ImGuiTreeNodeFlags.DefaultOpen);
             ImGui.SetWindowFontScale(1f);
 
-            var selectLabel = Text("SelectAll");
-            var buttonWidth = ImGui.CalcTextSize(selectLabel).X + OmniTheme.Scale(18f);
-            ImGui.SameLine(ImGui.GetContentRegionMax().X - buttonWidth);
-            if (OmniControls.SmallButton(selectLabel + "##selectSection" + id, false))
+            var candidates = entries
+                .Where(entry => IsSpecialEntry(entry) == special)
+                .Where(entry => config.ShowCollected || !entry.Collected)
+                .Where(entry => search.Length == 0 ||
+                                entry.Name.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0)
+                .ToList();
+            var allSelected = candidates.Count > 0 && candidates.All(entry => entry.Selected);
+
+            ImGui.SameLine(ImGui.GetContentRegionMax().X - ImGui.GetFrameHeight());
+            using (ImRaii.Disabled(candidates.Count == 0))
             {
-                SelectSection(entries, special);
+                var selected = allSelected;
+                if (ImGui.Checkbox("##selectSection" + id, ref selected))
+                {
+                    SelectSection(entries, special, selected);
+                }
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                OmniControls.HelpTooltip(Text("SelectAll"), true);
             }
 
             return open;
         }
     }
 
-    private void SelectSection(List<GatheringEntry> entries, bool special)
+    private void SelectSection(List<GatheringEntry> entries, bool special, bool select)
     {
         foreach (var entry in entries)
         {
@@ -472,7 +487,7 @@ public sealed class GatheringNotebook : OmniModuleBase
                 continue;
             }
 
-            entry.Selected = true;
+            entry.Selected = select;
         }
     }
 
