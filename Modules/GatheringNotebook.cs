@@ -450,12 +450,18 @@ public sealed class GatheringNotebook : OmniModuleBase
             var allSelected = candidates.Count > 0 && candidates.All(entry => entry.Selected);
 
             ImGui.SameLine(ImGui.GetContentRegionMax().X - ImGui.GetFrameHeight());
-            using (ImRaii.Disabled(candidates.Count == 0))
+            using (ImRaii.PushStyle(ImGuiStyleVar.FramePadding, new Vector2(OmniTheme.Scale(1f), OmniTheme.Scale(1f))))
             {
-                var selected = allSelected;
-                if (ImGui.Checkbox("##selectSection" + id, ref selected))
+                var checkboxSize = ImGui.GetFrameHeight();
+                ImGui.SetCursorPosX(ImGui.GetContentRegionMax().X - checkboxSize);
+                ImGui.SetCursorPosY(ImGui.GetCursorPosY() + OmniTheme.Scale(3f));
+                using (ImRaii.Disabled(candidates.Count == 0))
                 {
-                    SelectSection(entries, special, selected);
+                    var selected = allSelected;
+                    if (ImGui.Checkbox("##selectSection" + id, ref selected))
+                    {
+                        SelectSection(entries, special, selected);
+                    }
                 }
             }
 
