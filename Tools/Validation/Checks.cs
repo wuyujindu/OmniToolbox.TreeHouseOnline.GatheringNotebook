@@ -92,13 +92,13 @@ internal static class Checks
 
             var levelCategory = new GatheringCategory { Key = "level:10-14", MinLevel = 10, MaxLevel = 14 };
             var collectableCategory = new GatheringCategory { Key = "collectable", IsSpecial = true, CollectableOnly = true };
-            var folkloreCategory = new GatheringCategory { Key = "folklore:x", IsSpecial = true, FolkloreBook = "矿物传承录·龙堡篇" };
+            var folkloreCategory = new GatheringCategory { Key = "special:x", IsSpecial = true, SpecialLabel = "矿物传承录·龙堡篇" };
             var categorized = new[]
             {
                 new GatheringEntry { Name = "低级矿", Level = 10 },
                 new GatheringEntry { Name = "高级矿", Level = 20 },
                 new GatheringEntry { Name = "收藏矿", Level = 12, IsCollectable = true },
-                new GatheringEntry { Name = "传承矿", Level = 12, FolkloreBooks = ["矿物传承录·龙堡篇"] }
+                new GatheringEntry { Name = "传承矿", Level = 12, SpecialCategories = ["矿物传承录·龙堡篇"] }
             };
             Expect(GatheringNotebook.Filter(categorized, true, string.Empty, levelCategory).Count == 3);
             Expect(GatheringNotebook.Filter(categorized, true, string.Empty, collectableCategory).Count == 1);
@@ -119,19 +119,15 @@ internal static class Checks
 
         Check("GBR preset export encoding, dedupe and chunking", () =>
         {
-            static GatheringEntry Entry(uint itemId, bool selected, bool eventItem = false, bool hasNode = true) => new()
+            static GatheringEntry Entry(uint itemId, bool selected) => new()
             {
                 ItemId = itemId,
                 Name = "item" + itemId,
                 Level = 1,
-                Selected = selected,
-                IsEventItem = eventItem,
-                HasNode = hasNode
+                Selected = selected
             };
 
             var mining = Enumerable.Range(0, 250).Select(index => Entry((uint)(1000 + index), true)).ToList();
-            mining.Add(Entry(9999, true, eventItem: true));
-            mining.Add(Entry(8888, true, hasNode: false));
             var botany = Enumerable.Range(0, 120).Select(index => Entry((uint)(2000 + index), true)).ToList();
             botany.Add(Entry(1000, true)); // 与采矿重复，应只导出一次
             botany.Add(Entry(7777, false));
@@ -145,7 +141,7 @@ internal static class Checks
 
             var allIds = presets.SelectMany(preset => preset.ItemIds).ToList();
             Expect(allIds.Count == allIds.Distinct().Count());
-            Expect(!allIds.Contains(9999u) && !allIds.Contains(8888u) && !allIds.Contains(7777u));
+            Expect(!allIds.Contains(7777u));
             Expect(allIds.Count == 370);
             Expect(presets.All(preset => preset.Base64.Length > 0));
 
