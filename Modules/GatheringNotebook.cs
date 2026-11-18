@@ -659,6 +659,14 @@ public sealed class GatheringNotebook : OmniModuleBase
             .ToList();
 
         DrawCenteredText($"{Text("SelectedSection")} ({selected.Count})");
+        using (ImRaii.Disabled(selected.Count == 0))
+        {
+            if (OmniControls.SmallButton(Text("ClearSelection") + "##gatheringNotebookClearSelected", false))
+            {
+                ClearAllSelection();
+            }
+        }
+
         ImGui.Separator();
 
         if (selected.Count == 0)
@@ -679,6 +687,19 @@ public sealed class GatheringNotebook : OmniModuleBase
             }
 
             ImGui.PopID();
+        }
+    }
+
+    private void ClearAllSelection()
+    {
+        if (catalog == null)
+        {
+            return;
+        }
+
+        foreach (var entry in catalog.All)
+        {
+            entry.Selected = false;
         }
     }
 
