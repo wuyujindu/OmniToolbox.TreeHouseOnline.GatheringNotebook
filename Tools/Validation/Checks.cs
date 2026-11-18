@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.IO.Compression;
 using System.Security.Cryptography;
 using OmniToolbox.Common.Module.Abstractions;
 using OmniToolbox.Config;
@@ -101,8 +102,55 @@ internal static class Checks
             Expect(!module.ResetSettings());
         });
 
+        Check("GBR preset export encoding and chunking", () =>
+        {
+            static GatheringEntry Entry(uint itemId, bool selected, bool eventItem = false) => new()
+            {
+                ItemId = itemId,
+                Name = "item" + itemId,
+                Level = 1,
+                Selected = selected,
+                IsEventItem = eventItem
+            };
+
+            var mining = Enumerable.Range(0, 250).Select(index => Entry((uint)(1000 + index), true)).ToList();
+            mining.Add(Entry(9999, true, eventItem: true));
+            var botany = Enumerable.Range(0, 120).Select(index => Entry((uint)(2000 + index), true)).ToList();
+            botany.Add(Entry(7777, false));
+
+            var presets = GatheringNotebook.BuildPresets(mining, botany, "采矿", "园艺", "{0} 未采集 {1}", "共 {0} 项");
+            Expect(presets.Count == 5);
+            Expect(presets[0].ItemIds.Count == 100 && presets[1].ItemIds.Count == 100 && presets[2].ItemIds.Count == 50);
+            Expect(presets[3].ItemIds.Count == 100 && presets[4].ItemIds.Count == 20);
+            Expect(presets[0].Name == "采矿 未采集 1" && presets[2].Name == "采矿 未采集 3");
+            Expect(presets[3].Name == "园艺 未采集 1");
+            Expect(presets.All(preset => !preset.ItemIds.Contains(9999u) && !preset.ItemIds.Contains(7777u)));
+            Expect(presets.All(preset => preset.Base64.Length > 0));
+
+            var decoded = DecodePreset(presets[0].Base64);
+            Expect(decoded.Version == 6);
+            using var document = JsonDocument.Parse(decoded.Json);
+            var root = document.RootElement;
+            Expect(root.GetProperty("Name").GetString() == "采矿 未采集 1");
+            Expect(root.GetProperty("ItemIds").GetArrayLength() == 100);
+            Expect(root.GetProperty("Quantities").GetProperty("1000").GetUInt32() == 1);
+            Expect(root.GetProperty("EnabledItems").GetProperty("1000").GetBoolean());
+            Expect(!root.GetProperty("PrefferedLocations").EnumerateObject().Any());
+            Expect(!root.GetProperty("Enabled").GetBoolean() && !root.GetProperty("Fallback").GetBoolean());
+        });
+
         Console.WriteLine($"PASS {passed} test groups against real Omni API 1 dependencies.");
         return Task.CompletedTask;
+    }
+
+    private static (byte Version, string Json) DecodePreset(string base64)
+    {
+        using var input = new MemoryStream(Convert.FromBase64String(base64));
+        using var gzip = new GZipStream(input, CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        gzip.CopyTo(output);
+        var bytes = output.ToArray();
+        return (bytes[0], Encoding.UTF8.GetString(bytes, 1, bytes.Length - 1));
     }
 
     private static void Expect(bool success)
