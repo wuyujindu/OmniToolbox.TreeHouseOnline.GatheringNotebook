@@ -195,44 +195,6 @@ internal static class Checks
             Expect(GatheringNotebook.BuildRuriOrderJson(Array.Empty<GatheringEntry>()) == string.Empty);
         });
 
-        Check("GBR list file merge", () =>
-        {
-            const string existing = """[{"Name":"旧预设","ItemIds":[1],"Order":5}]""";
-            var presets = new[]
-            {
-                new GbrPreset("采矿 未采集 1", "说明", new List<uint> { 2, 3 }, "x"),
-                new GbrPreset("采矿 未采集 2", "说明", new List<uint> { 4 }, "y")
-            };
-
-            var json = GatheringNotebook.MergeGbrLists(existing, presets);
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            Expect(root.GetArrayLength() == 3);
-            Expect(root[1].GetProperty("Name").GetString() == "采矿 未采集 1");
-            Expect(root[1].GetProperty("Order").GetInt32() == 6);
-            Expect(root[1].GetProperty("ItemIds").GetArrayLength() == 2);
-            Expect(root[1].GetProperty("Quantities").GetProperty("2").GetUInt32() == 1);
-            Expect(root[1].GetProperty("EnabledItems").GetProperty("2").GetBoolean());
-            Expect(!root[1].GetProperty("Enabled").GetBoolean());
-            Expect(root[2].GetProperty("Order").GetInt32() == 7);
-
-            var replaced = GatheringNotebook.MergeGbrLists(
-                json,
-                new[] { new GbrPreset("采矿 未采集 1", "新", new List<uint> { 9 }, "z") });
-            using var replacedDocument = JsonDocument.Parse(replaced);
-            Expect(replacedDocument.RootElement.GetArrayLength() == 3);
-            var replacedNode = replacedDocument.RootElement.EnumerateArray()
-                .First(node => node.GetProperty("Name").GetString() == "采矿 未采集 1");
-            Expect(replacedNode.GetProperty("ItemIds")[0].GetUInt32() == 9);
-
-            var rebuilt = GatheringNotebook.MergeGbrLists(
-                "not json",
-                new[] { new GbrPreset("A", string.Empty, new List<uint> { 1 }, "x") });
-            using var rebuiltDocument = JsonDocument.Parse(rebuilt);
-            Expect(rebuiltDocument.RootElement.GetArrayLength() == 1);
-            Expect(rebuiltDocument.RootElement[0].GetProperty("Order").GetInt32() == 1);
-        });
-
         Console.WriteLine($"PASS {passed} test groups against real Omni API 1 dependencies.");
         return Task.CompletedTask;
     }

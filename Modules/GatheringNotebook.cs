@@ -73,13 +73,8 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["SelectAll"] = "全选",
             ["ClearSelection"] = "清除选择",
             ["SelectedCount"] = "已选 {0} 项",
-            ["ExportPresets"] = "导出 GBR 预设",
-            ["ExportPresetsHelp"] = "把选中物品按每 100 项生成预设并写入 GBR 的自动采集列表文件; GBR 只在启动时读取该文件, 写入后要重载 GBR 或重启游戏才看得到",
-            ["GbrWritten"] = "已写入 {0} 个预设到 GBR 列表文件; 重载 GBR 或重启游戏后生效",
-            ["GbrReloadHint"] = "GBR 只在启动时读列表文件: /xlplugins 里禁用再启用 GatherBuddyReborn, 或想立刻生效就用「复制预设」在 GBR 里从剪贴板导入",
             ["CopyPresets"] = "复制预设",
             ["CopyPresetsHelp"] = "逐个复制预设, 到 GBR 里用「从剪贴板导入」(备用方式)",
-            ["GbrWriteFailed"] = "写入 GBR 列表失败: {0}",
             ["RuriOrder"] = "生成 Ruri 订单",
             ["RuriOrderHelp"] = "把选中的未采集物生成 Ruri 订单, 打开 Ruri 并做计划检查 (不会开始执行)",
             ["RuriStart"] = "Ruri 立即采集",
@@ -194,17 +189,6 @@ public sealed class GatheringNotebook : OmniModuleBase
         var selected = CountSelected();
         ImGui.TextUnformatted(Text("SelectedCount", selected));
         ImGui.SameLine(0f, OmniTheme.Scale(12f));
-        using (ImRaii.Disabled(selected == 0))
-        {
-            if (OmniControls.SmallButton(Text("ExportPresets") + "##gatheringNotebookExport", false))
-            {
-                ExportPresetsToGbr();
-            }
-        }
-
-        OmniControls.HelpTooltip(Text("ExportPresetsHelp"));
-
-        ImGui.SameLine(0f, OmniTheme.Scale(6f));
         using (ImRaii.Disabled(selected == 0))
         {
             if (OmniControls.SmallButton(Text("CopyPresets") + "##gatheringNotebookCopyPresets", false))
@@ -974,121 +958,6 @@ public sealed class GatheringNotebook : OmniModuleBase
             Text("Botany"),
             Text("PresetName"),
             Text("PresetDescription")));
-    }
-
-    private void ExportPresetsToGbr()
-    {
-        BuildPresets();
-        if (presets.Count == 0)
-        {
-            DalamudServices.ChatGUI.Print(Text("NoSelection"));
-            return;
-        }
-
-        var path = ResolveGbrListPath();
-        if (path == null)
-        {
-            DalamudServices.ChatGUI.Print(Text("GbrWriteFailed", "找不到 GBR 配置目录"));
-            return;
-        }
-
-        try
-        {
-            var existing = File.Exists(path) ? File.ReadAllText(path) : "[]";
-            if (string.IsNullOrWhiteSpace(existing))
-            {
-                existing = "[]";
-            }
-
-            var json = MergeGbrLists(existing, presets);
-            var temp = path + ".tmp";
-            File.WriteAllText(temp, json);
-            File.Move(temp, path, true);
-            DalamudServices.ChatGUI.Print(Text("GbrWritten", presets.Count));
-            DalamudServices.ChatGUI.Print(Text("GbrReloadHint"));
-        }
-        catch (Exception exception)
-        {
-            DalamudServices.ChatGUI.Print(Text("GbrWriteFailed", exception.Message));
-        }
-    }
-
-    internal static string MergeGbrLists(string existingJson, IEnumerable<GbrPreset> presets)
-    {
-        var array = new JsonArray();
-        try
-        {
-            if (JsonNode.Parse(existingJson) is JsonArray parsed)
-            {
-                array = parsed;
-            }
-        }
-        catch (JsonException)
-        {
-            array = new JsonArray();
-        }
-
-        var order = 0;
-        foreach (var node in array)
-        {
-            if (node?["Order"] is JsonValue value && value.TryGetValue<int>(out var existingOrder))
-            {
-                order = Math.Max(order, existingOrder);
-            }
-        }
-
-        foreach (var preset in presets)
-        {
-            for (var index = array.Count - 1; index >= 0; index--)
-            {
-                if (array[index]?["Name"] is JsonValue nameValue &&
-                    nameValue.TryGetValue<string>(out var existingName) &&
-                    string.Equals(existingName, preset.Name, StringComparison.Ordinal))
-                {
-                    array.RemoveAt(index);
-                }
-            }
-
-            order++;
-            var payload = new GbrPresetPayload
-            {
-                Name = preset.Name,
-                Description = preset.Description,
-                Order = order,
-                ItemIds = preset.ItemIds.ToArray()
-            };
-
-            foreach (var itemId in preset.ItemIds)
-            {
-                payload.Quantities[itemId] = 1;
-                payload.EnabledItems[itemId] = true;
-            }
-
-            var node = JsonSerializer.SerializeToNode(payload)!.AsObject();
-            // GBR 的列表文件里没有 CurrentVersion, 保持和游戏内保存的格式一致。
-            node.Remove("CurrentVersion");
-            array.Add(node);
-        }
-
-        return array.ToJsonString(new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-        });
-    }
-
-    private static string? ResolveGbrListPath()
-    {
-        try
-        {
-            var directory = DalamudServices.PluginInterface.GetPluginConfigDirectory();
-            var parent = Directory.GetParent(directory)?.FullName;
-            return parent == null ? null : Path.Combine(parent, "GatherbuddyReborn", "auto_gather_lists.json");
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     internal static List<GbrPreset> BuildPresets(
