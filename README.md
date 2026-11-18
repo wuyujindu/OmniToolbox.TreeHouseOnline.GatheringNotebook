@@ -42,14 +42,16 @@ Omni 读取默认分支根目录的 `TreeHouseModules.json`，下载并校验模
 
 ### 自动丢弃采集物
 
-勾选顶部「自动丢弃采集物」后，采集到的图鉴物品进入背包时会立即被丢弃，省去清包：
+勾选顶部「自动丢弃采集物」后，采集到的图鉴物品会被自动丢弃，省去清包：
 
 - 只对**采集笔记图鉴里收录的物品**生效，且**水晶/晶簇不会丢弃**；
 - 只会丢弃「这一叠全部是刚获得的」物品（新出现的整叠），**不会动背包里原本就有的同种物品**；
 - 如果背包里已有同类堆叠、新采集的物品会合并进去，这时不会自动丢弃（安全起见宁可不丢）；
-- 依赖 Dalamud 的 `IGameInventory.InventoryChangedRaw` 和 `InventoryManager.DiscardItem`，只在游戏内登录角色时生效。
+- **丢弃会延后到采集窗口关闭后执行**：Ruri 是靠背包里物品数量判断采集进度的，立刻丢会让它计数归零、反复采集/暂停；
+  延后后既能把物品清掉，也不会打断 Ruri 或手动采集；
+- 依赖 Dalamud 的 `IGameInventory.InventoryChangedRaw`、`IGameGui` 和 `InventoryManager.DiscardItem`，只在游戏内登录角色时生效。
 
-关掉勾选立即停止。
+关掉勾选会立即清空待丢弃队列并停止。
 
 ### 生成 GatherBuddy Reborn 自动采集预设
 

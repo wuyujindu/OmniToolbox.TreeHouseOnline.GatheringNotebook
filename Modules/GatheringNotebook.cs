@@ -66,8 +66,8 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["ShowCollected"] = "显示已采集",
             ["ShowCollectedHelp"] = "勾选后一并列出已经采集过的采集物",
             ["AutoDiscard"] = "自动丢弃采集物",
-            ["AutoDiscardHelp"] = "开启后，采集到的图鉴物品进入背包时会立即整叠丢弃（只丢新出现的整叠，背包里已有的同类物品不会动）；水晶类不丢弃",
-            ["AutoDiscardOn"] = "自动丢弃已开启: 只丢新出现的整叠图鉴物品 (水晶除外)",
+            ["AutoDiscardHelp"] = "开启后，采集到的图鉴物品会在采集窗口关闭后自动整叠丢弃（只丢新出现的整叠，背包里已有的同类物品不会动）；水晶类不丢弃；避开采集过程，不会打断 Ruri",
+            ["AutoDiscardOn"] = "自动丢弃已开启: 采集窗口关闭后丢弃新出现的整叠图鉴物品 (水晶除外)",
             ["SearchHint"] = "搜索采集物名称",
             ["Name"] = "名称",
             ["Level"] = "等级",
@@ -120,16 +120,28 @@ public sealed class GatheringNotebook : OmniModuleBase
     private GatheringEntry? detailEntry;
     private string copiedPreset = string.Empty;
     private readonly HashSet<uint> discardableItemIds = [];
+    private readonly List<PendingDiscard> pendingDiscards = [];
+    private IGameGui? gameGui;
+
+    private readonly record struct PendingDiscard(
+        GameInventoryType Container,
+        uint Slot,
+        uint ItemId,
+        long CreatedAt);
 
     public override bool HasSettings => true;
 
     protected override void OnStart(FeatureLifetime activation)
     {
+        gameGui = DalamudServices.PluginInterface.GetService(typeof(IGameGui)) as IGameGui;
         if (DalamudServices.PluginInterface.GetService(typeof(IGameInventory)) is IGameInventory gameInventory)
         {
             gameInventory.InventoryChangedRaw += OnInventoryChangedRaw;
             activation.OnStopping(() => gameInventory.InventoryChangedRaw -= OnInventoryChangedRaw);
         }
+
+        DalamudServices.Framework.Update += OnFrameworkUpdate;
+        activation.OnStopping(() => DalamudServices.Framework.Update -= OnFrameworkUpdate);
     }
 
     private void OnInventoryChangedRaw(IReadOnlyCollection<InventoryEventArgs> events)
@@ -166,11 +178,78 @@ public sealed class GatheringNotebook : OmniModuleBase
                 continue;
             }
 
-            DiscardItemSlot(item);
+            // 先排队，等采集窗口关闭后再丢：立刻丢弃会让 Ruri 的背包计数归零，导致它反复采集/暂停。
+            if (pendingDiscards.Any(pending => pending.Container == item.ContainerType && pending.Slot == item.InventorySlot))
+            {
+                continue;
+            }
+
+            pendingDiscards.Add(new PendingDiscard(
+                item.ContainerType,
+                item.InventorySlot,
+                item.ItemId,
+                Environment.TickCount64));
         }
     }
 
-    private static unsafe void DiscardItemSlot(GameInventoryItem item)
+    private void OnFrameworkUpdate(IFramework framework)
+    {
+        if (pendingDiscards.Count == 0)
+        {
+            return;
+        }
+
+        if (!config.AutoDiscardGathered)
+        {
+            pendingDiscards.Clear();
+            return;
+        }
+
+        // 采集窗口还开着（Ruri 正在采集/计数）时不丢，等它关掉再说。
+        if (IsGatheringWindowOpen())
+        {
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        for (var index = pendingDiscards.Count - 1; index >= 0; index--)
+        {
+            var pending = pendingDiscards[index];
+            if (now - pending.CreatedAt < 500)
+            {
+                continue;
+            }
+
+            pendingDiscards.RemoveAt(index);
+            if (!DalamudServices.PlayerState.IsLoaded || !IsSlotStillHolding(pending))
+            {
+                continue;
+            }
+
+            DiscardItemSlot(pending);
+        }
+    }
+
+    private bool IsGatheringWindowOpen()
+    {
+        var gui = gameGui;
+        return gui != null &&
+               (!gui.GetAddonByName("Gathering", 1).IsNull || !gui.GetAddonByName("GatheringMasterpiece", 1).IsNull);
+    }
+
+    private static unsafe bool IsSlotStillHolding(PendingDiscard pending)
+    {
+        var manager = InventoryManager.Instance();
+        if (manager == null)
+        {
+            return false;
+        }
+
+        var slot = manager->GetInventorySlot((InventoryType)(int)pending.Container, (int)pending.Slot);
+        return slot != null && slot->ItemId == pending.ItemId;
+    }
+
+    private static unsafe void DiscardItemSlot(PendingDiscard pending)
     {
         var manager = InventoryManager.Instance();
         if (manager == null)
@@ -178,7 +257,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             return;
         }
 
-        manager->DiscardItem((InventoryType)(int)item.ContainerType, (ushort)item.InventorySlot);
+        manager->DiscardItem((InventoryType)(int)pending.Container, (ushort)pending.Slot);
     }
 
     public override bool DrawSettings()
