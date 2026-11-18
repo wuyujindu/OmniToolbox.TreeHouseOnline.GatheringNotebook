@@ -368,10 +368,11 @@ public sealed class GatheringNotebook : OmniModuleBase
         var available = ImGui.GetContentRegionAvail().X;
         var sidebarWidth = OmniTheme.Scale(190f);
         var detailWidth = OmniTheme.Scale(180f);
-        var selectedWidth = OmniTheme.Scale(195f);
-        var listWidth = MathF.Max(
-            OmniTheme.Scale(220f),
-            available - sidebarWidth - detailWidth - selectedWidth - spacing * 3f);
+        // 列表固定窄一些，剩余宽度全部给「已选择」栏，保证右边的物品不会被裁掉。
+        var listWidth = Math.Clamp(available * 0.34f, OmniTheme.Scale(240f), OmniTheme.Scale(360f));
+        var selectedWidth = MathF.Max(
+            OmniTheme.Scale(240f),
+            available - sidebarWidth - detailWidth - listWidth - spacing * 3f);
 
         using (ImRaii.PushStyle(ImGuiStyleVar.WindowPadding, new Vector2(OmniTheme.Scale(10f), OmniTheme.Scale(8f))))
         {
