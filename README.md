@@ -38,7 +38,18 @@ Omni 读取默认分支根目录的 `TreeHouseModules.json`，下载并校验模
 - 按 `GatheringPointBase.GatheringType` 分四种：`0` 采掘、`1` 碎石、`2` 采伐、`3` 割草；捕鱼类型不纳入。
 - 完成状态调用 `QuestManager.IsGatheringItemGathered(gatheringItemId)`，参数是 `GatheringItem` 的 RowId；只在角色登录后读取。
 - **同一物品只列一条**：一个物品可能对应多个 `GatheringItem` 行，模块按物品 ID 合并，采集状态取「任意一行采集过」。
-- 设置项：显示已采集、按名称搜索、手动刷新；设置界面打开时每 2 秒自动刷新一次。
+- 设置项：显示已采集、**自动丢弃采集物**、按名称搜索、手动刷新；设置界面打开时每 2 秒自动刷新一次。
+
+### 自动丢弃采集物
+
+勾选顶部「自动丢弃采集物」后，采集到的图鉴物品进入背包时会立即被丢弃，省去清包：
+
+- 只对**采集笔记图鉴里收录的物品**生效，且**水晶/晶簇不会丢弃**；
+- 只会丢弃「这一叠全部是刚获得的」物品（新出现的整叠），**不会动背包里原本就有的同种物品**；
+- 如果背包里已有同类堆叠、新采集的物品会合并进去，这时不会自动丢弃（安全起见宁可不丢）；
+- 依赖 Dalamud 的 `IGameInventory.InventoryChangedRaw` 和 `InventoryManager.DiscardItem`，只在游戏内登录角色时生效。
+
+关掉勾选立即停止。
 
 ### 生成 GatherBuddy Reborn 自动采集预设
 

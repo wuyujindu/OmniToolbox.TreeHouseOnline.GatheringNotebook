@@ -9,7 +9,10 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.Inventory;
+using Dalamud.Game.Inventory.InventoryEventArgTypes;
 using Dalamud.Interface.Utility.Raii;
+using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using Lumina.Excel.Sheets;
 using OmniToolbox.Common.Module.Abstractions;
@@ -21,6 +24,7 @@ using OmniToolbox.UI.Controls;
 using OmniToolbox.UI.Theme;
 using OmenTools.Interop.Game.Lumina;
 using OmenTools.OmenService;
+using TreeTools.Lifecycle;
 
 namespace OmniToolbox.TreeHouseOnline;
 
@@ -61,6 +65,9 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["RefreshHelp"] = "重新读取采集笔记的完成情况",
             ["ShowCollected"] = "显示已采集",
             ["ShowCollectedHelp"] = "勾选后一并列出已经采集过的采集物",
+            ["AutoDiscard"] = "自动丢弃采集物",
+            ["AutoDiscardHelp"] = "开启后，采集到的图鉴物品进入背包时会立即整叠丢弃（只丢新出现的整叠，背包里已有的同类物品不会动）；水晶类不丢弃",
+            ["AutoDiscardOn"] = "自动丢弃已开启: 只丢新出现的整叠图鉴物品 (水晶除外)",
             ["SearchHint"] = "搜索采集物名称",
             ["Name"] = "名称",
             ["Level"] = "等级",
@@ -112,8 +119,67 @@ public sealed class GatheringNotebook : OmniModuleBase
     private string selectedCategoryKey = string.Empty;
     private GatheringEntry? detailEntry;
     private string copiedPreset = string.Empty;
+    private readonly HashSet<uint> discardableItemIds = [];
 
     public override bool HasSettings => true;
+
+    protected override void OnStart(FeatureLifetime activation)
+    {
+        if (DalamudServices.PluginInterface.GetService(typeof(IGameInventory)) is IGameInventory gameInventory)
+        {
+            gameInventory.InventoryChangedRaw += OnInventoryChangedRaw;
+            activation.OnStopping(() => gameInventory.InventoryChangedRaw -= OnInventoryChangedRaw);
+        }
+    }
+
+    private void OnInventoryChangedRaw(IReadOnlyCollection<InventoryEventArgs> events)
+    {
+        if (!config.AutoDiscardGathered || discardableItemIds.Count == 0 || !DalamudServices.PlayerState.IsLoaded)
+        {
+            return;
+        }
+
+        foreach (var args in events)
+        {
+            if (args.Item.ContainerType is not (GameInventoryType.Inventory1 or GameInventoryType.Inventory2 or
+                GameInventoryType.Inventory3 or GameInventoryType.Inventory4))
+            {
+                continue;
+            }
+
+            var item = args.Item;
+            if (item.ItemId == 0 || !discardableItemIds.Contains(item.ItemId))
+            {
+                continue;
+            }
+
+            var gained = args switch
+            {
+                InventoryItemAddedArgs => item.Quantity,
+                InventoryItemChangedArgs changed => item.Quantity - changed.OldItemState.Quantity,
+                _ => 0
+            };
+
+            // 只丢弃「这一叠全部是刚获得的」物品，避免连带删掉背包里原有的同类物品。
+            if (gained <= 0 || item.Quantity != gained)
+            {
+                continue;
+            }
+
+            DiscardItemSlot(item);
+        }
+    }
+
+    private static unsafe void DiscardItemSlot(GameInventoryItem item)
+    {
+        var manager = InventoryManager.Instance();
+        if (manager == null)
+        {
+            return;
+        }
+
+        manager->DiscardItem((InventoryType)(int)item.ContainerType, (ushort)item.InventorySlot);
+    }
 
     public override bool DrawSettings()
     {
@@ -143,12 +209,13 @@ public sealed class GatheringNotebook : OmniModuleBase
 
     public override bool ResetSettings()
     {
-        if (!config.ShowCollected)
+        if (!config.ShowCollected && !config.AutoDiscardGathered)
         {
             return false;
         }
 
         config.ShowCollected = false;
+        config.AutoDiscardGathered = false;
         return true;
     }
 
@@ -176,6 +243,21 @@ public sealed class GatheringNotebook : OmniModuleBase
 
         ImGui.SameLine(0f, OmniTheme.Scale(6f));
         OmniControls.HelpIcon(Text("ShowCollectedHelp"));
+
+        ImGui.SameLine(0f, OmniTheme.Scale(12f));
+        var autoDiscard = config.AutoDiscardGathered;
+        if (OmniControls.Checkbox(Text("AutoDiscard") + "##gatheringNotebookAutoDiscard", ref autoDiscard))
+        {
+            config.AutoDiscardGathered = autoDiscard;
+            changed = true;
+            if (autoDiscard)
+            {
+                DalamudServices.ChatGUI.Print(Text("AutoDiscardOn"));
+            }
+        }
+
+        ImGui.SameLine(0f, OmniTheme.Scale(6f));
+        OmniControls.HelpIcon(Text("AutoDiscardHelp"));
 
         ImGui.SameLine(0f, OmniTheme.Scale(12f));
         ImGui.SetNextItemWidth(OmniTheme.Scale(200f));
@@ -1195,6 +1277,15 @@ public sealed class GatheringNotebook : OmniModuleBase
         try
         {
             catalog = GatheringCatalog.Build();
+            discardableItemIds.Clear();
+            foreach (var entry in catalog.All)
+            {
+                if (!entry.IsCrystal)
+                {
+                    discardableItemIds.Add(entry.ItemId);
+                }
+            }
+
             catalogUnavailable = false;
             RefreshCollected();
             return true;
@@ -1259,6 +1350,7 @@ public sealed class GatheringNotebook : OmniModuleBase
     internal sealed class Settings
     {
         public bool ShowCollected { get; set; }
+        public bool AutoDiscardGathered { get; set; }
     }
 
     internal sealed class GatheringCatalog
