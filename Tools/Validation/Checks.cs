@@ -98,12 +98,24 @@ internal static class Checks
                 new GatheringEntry { Name = "低级矿", Level = 10 },
                 new GatheringEntry { Name = "高级矿", Level = 20 },
                 new GatheringEntry { Name = "收藏矿", Level = 12, IsCollectable = true },
-                new GatheringEntry { Name = "传承矿", Level = 12, SpecialCategories = ["矿物传承录·龙堡篇"] }
+                new GatheringEntry
+                {
+                    Name = "传承矿", Level = 12,
+                    SpecialCategories = ["矿物传承录·龙堡篇"], PrimarySpecial = "矿物传承录·龙堡篇"
+                },
+                new GatheringEntry
+                {
+                    Name = "双料矿", Level = 12, IsCollectable = true,
+                    SpecialCategories = ["矿物传承录·龙堡篇"], PrimarySpecial = "矿物传承录·龙堡篇"
+                }
             };
-            Expect(GatheringNotebook.Filter(categorized, true, string.Empty, levelCategory).Count == 3);
-            Expect(GatheringNotebook.Filter(categorized, true, string.Empty, collectableCategory).Count == 1);
-            Expect(GatheringNotebook.Filter(categorized, true, string.Empty, folkloreCategory).Count == 1);
-            Expect(GatheringNotebook.Filter(categorized, true, "矿", levelCategory).Count == 3);
+            // 游戏内等级分类包含收藏品，特殊分类是额外子集，两边可以同时出现
+            Expect(GatheringNotebook.Filter(categorized, true, string.Empty, levelCategory).Count == 4);
+            Expect(GatheringNotebook.Filter(categorized, true, string.Empty, collectableCategory).Count == 2);
+            Expect(GatheringNotebook.Filter(categorized, true, string.Empty, folkloreCategory).Count == 2);
+            Expect(GatheringNotebook.Filter(categorized, true, "矿", levelCategory).Count == 4);
+            Expect(GatheringNotebook.IsSpecialEntry(categorized[3]) && GatheringNotebook.IsSpecialEntry(categorized[2]));
+            Expect(!GatheringNotebook.IsSpecialEntry(categorized[0]));
 
             var sorted = entries.ToList();
             sorted.Sort(GatheringNotebook.CompareEntries);

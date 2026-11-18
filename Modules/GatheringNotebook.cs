@@ -45,6 +45,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["BotanyProgress"] = "园艺 已采集 {0} / {1}",
             ["LevelSection"] = "采集等级",
             ["SpecialSection"] = "特殊分类",
+            ["SelectedSection"] = "已选择",
             ["DetailTitle"] = "采集点",
             ["NodeLine"] = "{0} · {1} {2}级",
             ["CollectableTag"] = "收藏品",
@@ -322,10 +323,18 @@ public sealed class GatheringNotebook : OmniModuleBase
 
         var category = categories.First(item => item.Key == selectedCategoryKey);
         var height = OmniTheme.Scale(430f);
+        var spacing = OmniTheme.Scale(8f);
+        var available = ImGui.GetContentRegionAvail().X;
+        var sidebarWidth = OmniTheme.Scale(190f);
+        var detailWidth = OmniTheme.Scale(180f);
+        var selectedWidth = OmniTheme.Scale(195f);
+        var listWidth = MathF.Max(
+            OmniTheme.Scale(220f),
+            available - sidebarWidth - detailWidth - selectedWidth - spacing * 3f);
 
         using (ImRaii.PushStyle(ImGuiStyleVar.WindowPadding, new Vector2(OmniTheme.Scale(10f), OmniTheme.Scale(8f))))
         {
-            using (var sidebar = ImRaii.Child("##gatheringNotebookSidebar", new Vector2(OmniTheme.Scale(200f), height), true))
+            using (var sidebar = ImRaii.Child("##gatheringNotebookSidebar", new Vector2(sidebarWidth, height), true))
             {
                 if (sidebar)
                 {
@@ -333,8 +342,8 @@ public sealed class GatheringNotebook : OmniModuleBase
                 }
             }
 
-            ImGui.SameLine(0f, OmniTheme.Scale(8f));
-            using (var list = ImRaii.Child("##gatheringNotebookList", new Vector2(OmniTheme.Scale(345f), height), true))
+            ImGui.SameLine(0f, spacing);
+            using (var list = ImRaii.Child("##gatheringNotebookList", new Vector2(listWidth, height), true))
             {
                 if (list)
                 {
@@ -342,12 +351,21 @@ public sealed class GatheringNotebook : OmniModuleBase
                 }
             }
 
-            ImGui.SameLine(0f, OmniTheme.Scale(8f));
-            using (var detail = ImRaii.Child("##gatheringNotebookDetail", new Vector2(-1f, height), true))
+            ImGui.SameLine(0f, spacing);
+            using (var detail = ImRaii.Child("##gatheringNotebookDetail", new Vector2(detailWidth, height), true))
             {
                 if (detail)
                 {
                     DrawDetail();
+                }
+            }
+
+            ImGui.SameLine(0f, spacing);
+            using (var selected = ImRaii.Child("##gatheringNotebookSelected", new Vector2(selectedWidth, height), true))
+            {
+                if (selected)
+                {
+                    DrawSelected();
                 }
             }
         }
@@ -368,7 +386,7 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         ImGui.Spacing();
-        if (DrawSectionHeader("LevelSection", "##gatheringNotebookLevels"))
+        if (DrawSectionHeader("LevelSection", "##gatheringNotebookLevels", entries, false))
         {
             foreach (var category in categories.Where(item => !item.IsSpecial))
             {
@@ -382,7 +400,7 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         ImGui.Spacing();
-        if (DrawSectionHeader("SpecialSection", "##gatheringNotebookSpecial"))
+        if (DrawSectionHeader("SpecialSection", "##gatheringNotebookSpecial", entries, true))
         {
             foreach (var category in categories.Where(item => item.IsSpecial))
             {
@@ -391,14 +409,46 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
     }
 
-    private bool DrawSectionHeader(string key, string id)
+    private bool DrawSectionHeader(string key, string id, List<GatheringEntry> entries, bool special)
     {
         using (ImRaii.PushColor(ImGuiCol.Text, OmniTheme.ControlAccent, true))
         {
             ImGui.SetWindowFontScale(1.15f);
             var open = ImGui.CollapsingHeader(Text(key) + id, ImGuiTreeNodeFlags.DefaultOpen);
             ImGui.SetWindowFontScale(1f);
+
+            var selectLabel = Text("SelectAll");
+            var buttonWidth = ImGui.CalcTextSize(selectLabel).X + OmniTheme.Scale(18f);
+            ImGui.SameLine(ImGui.GetContentRegionMax().X - buttonWidth);
+            if (OmniControls.SmallButton(selectLabel + "##selectSection" + id, false))
+            {
+                SelectSection(entries, special);
+            }
+
             return open;
+        }
+    }
+
+    private void SelectSection(List<GatheringEntry> entries, bool special)
+    {
+        foreach (var entry in entries)
+        {
+            if (IsSpecialEntry(entry) != special)
+            {
+                continue;
+            }
+
+            if (!config.ShowCollected && entry.Collected)
+            {
+                continue;
+            }
+
+            if (search.Length > 0 && entry.Name.IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                continue;
+            }
+
+            entry.Selected = true;
         }
     }
 
@@ -569,6 +619,69 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
     }
 
+    private void DrawSelected()
+    {
+        if (catalog == null)
+        {
+            return;
+        }
+
+        var selected = catalog.Mining.Concat(catalog.Botany)
+            .Where(entry => entry.Selected)
+            .GroupBy(entry => entry.ItemId)
+            .Select(group => group.First())
+            .OrderBy(entry => entry.Level)
+            .ThenBy(entry => entry.Name, StringComparer.CurrentCulture)
+            .ToList();
+
+        DrawCenteredText($"{Text("SelectedSection")} ({selected.Count})");
+        ImGui.Separator();
+
+        if (selected.Count == 0)
+        {
+            ImGui.TextUnformatted(Text("NoSelection"));
+            return;
+        }
+
+        foreach (var entry in selected)
+        {
+            ImGui.PushID((int)entry.ItemId);
+            var remove = OmniControls.SmallButton("×##removeSelected", false);
+            ImGui.SameLine(0f, OmniTheme.Scale(6f));
+            ImGui.TextUnformatted($"{entry.Name} ({entry.Level})");
+            if (remove)
+            {
+                ClearSelection(entry.ItemId);
+            }
+
+            ImGui.PopID();
+        }
+    }
+
+    private void ClearSelection(uint itemId)
+    {
+        if (catalog == null)
+        {
+            return;
+        }
+
+        foreach (var entry in catalog.Mining)
+        {
+            if (entry.ItemId == itemId)
+            {
+                entry.Selected = false;
+            }
+        }
+
+        foreach (var entry in catalog.Botany)
+        {
+            if (entry.ItemId == itemId)
+            {
+                entry.Selected = false;
+            }
+        }
+    }
+
     private static void DrawCenteredText(string text)
     {
         var available = ImGui.GetContentRegionAvail().X;
@@ -601,6 +714,21 @@ public sealed class GatheringNotebook : OmniModuleBase
             });
         }
 
+        var specialLabels = entries
+            .SelectMany(entry => entry.SpecialCategories)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(label => label, StringComparer.CurrentCulture);
+        foreach (var label in specialLabels)
+        {
+            result.Add(new GatheringCategory
+            {
+                Key = "special:" + label,
+                Label = label,
+                IsSpecial = true,
+                SpecialLabel = label
+            });
+        }
+
         if (entries.Any(entry => entry.IsCollectable))
         {
             result.Add(new GatheringCategory
@@ -612,23 +740,11 @@ public sealed class GatheringNotebook : OmniModuleBase
             });
         }
 
-        var specials = entries
-            .SelectMany(entry => entry.SpecialCategories)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(label => label, StringComparer.CurrentCulture);
-        foreach (var special in specials)
-        {
-            result.Add(new GatheringCategory
-            {
-                Key = "special:" + special,
-                Label = special,
-                IsSpecial = true,
-                SpecialLabel = special
-            });
-        }
-
         return result;
     }
+
+    internal static bool IsSpecialEntry(GatheringEntry entry) =>
+        entry.PrimarySpecial.Length > 0 || entry.IsCollectable;
 
     private void SwitchBranch(GatheringBranch branch)
     {
@@ -1223,7 +1339,10 @@ public sealed class GatheringNotebook : OmniModuleBase
                     IsCollectable = builder.IsCollectable,
                     GatheringItemIds = builder.GatheringItemIds.ToArray(),
                     Nodes = builder.Nodes.ToArray(),
-                    SpecialCategories = builder.SpecialCategories.ToArray()
+                    SpecialCategories = builder.SpecialCategories.ToArray(),
+                    PrimarySpecial = builder.SpecialCategories
+                        .OrderBy(label => label, StringComparer.Ordinal)
+                        .FirstOrDefault() ?? string.Empty
                 };
 
                 if (key.Branch == GatheringBranch.Mining)
@@ -1274,6 +1393,7 @@ internal sealed class GatheringEntry
     public IReadOnlyList<uint> GatheringItemIds { get; init; } = [];
     public IReadOnlyList<GatheringNodeInfo> Nodes { get; init; } = [];
     public IReadOnlyList<string> SpecialCategories { get; init; } = [];
+    public string PrimarySpecial { get; init; } = string.Empty;
     public bool Collected { get; set; }
     public bool Selected { get; set; }
 }
