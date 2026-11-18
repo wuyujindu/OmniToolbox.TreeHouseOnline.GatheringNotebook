@@ -107,6 +107,8 @@ public sealed class GatheringNotebook : OmniModuleBase
     private readonly List<GbrPreset> presets = [];
     private int activeJob;
     private int activeType;
+    private bool levelSectionOpen = true;
+    private bool specialSectionOpen = true;
     private string selectedCategoryKey = string.Empty;
     private GatheringEntry? detailEntry;
     private string copiedPreset = string.Empty;
@@ -410,7 +412,7 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         ImGui.Spacing();
-        if (DrawSectionHeader("LevelSection", "##gatheringNotebookLevels", entries, false))
+        if (DrawSectionHeader("LevelSection", "##gatheringNotebookLevels", entries, false, ref levelSectionOpen))
         {
             foreach (var category in categories.Where(item => !item.IsSpecial))
             {
@@ -424,7 +426,7 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         ImGui.Spacing();
-        if (DrawSectionHeader("SpecialSection", "##gatheringNotebookSpecial", entries, true))
+        if (DrawSectionHeader("SpecialSection", "##gatheringNotebookSpecial", entries, true, ref specialSectionOpen))
         {
             foreach (var category in categories.Where(item => item.IsSpecial))
             {
@@ -433,41 +435,84 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
     }
 
-    private bool DrawSectionHeader(string key, string id, List<GatheringEntry> entries, bool special)
+    private bool DrawSectionHeader(string key, string id, List<GatheringEntry> entries, bool special, ref bool open)
     {
-        using (ImRaii.PushColor(ImGuiCol.Text, OmniTheme.ControlAccent, true))
+        var candidates = entries
+            .Where(entry => IsSpecialEntry(entry) == special)
+            .Where(entry => config.ShowCollected || !entry.Collected)
+            .Where(entry => search.Length == 0 ||
+                            entry.Name.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0)
+            .ToList();
+        var allSelected = candidates.Count > 0 && candidates.All(entry => entry.Selected);
+
+        var label = Text(key);
+        var startPosition = ImGui.GetCursorScreenPos();
+        var contentWidth = ImGui.GetContentRegionAvail().X;
+        var arrowWidth = OmniTheme.Scale(9f);
+        var spacing = OmniTheme.Scale(7f);
+        var checkboxSize = OmniTheme.Scale(14f);
+        var rowHeight = OmniTheme.Scale(22f);
+
+        ImGui.SetWindowFontScale(1.15f);
+        var textWidth = ImGui.CalcTextSize(label).X;
+        var textHeight = ImGui.GetTextLineHeight();
+        ImGui.SetWindowFontScale(1f);
+
+        var groupWidth = arrowWidth + spacing + textWidth + spacing + checkboxSize;
+        var startX = startPosition.X + MathF.Max(0f, (contentWidth - groupWidth) * 0.5f);
+        var centerY = startPosition.Y + rowHeight * 0.5f;
+
+        ImGui.SetCursorScreenPos(new Vector2(startX, startPosition.Y));
+        ImGui.InvisibleButton(id + "##sectionHeader", new Vector2(arrowWidth + spacing + textWidth, rowHeight));
+        if (ImGui.IsItemClicked())
         {
-            ImGui.SetWindowFontScale(1.15f);
-            var open = ImGui.CollapsingHeader(Text(key) + id, ImGuiTreeNodeFlags.DefaultOpen);
-            ImGui.SetWindowFontScale(1f);
-
-            var candidates = entries
-                .Where(entry => IsSpecialEntry(entry) == special)
-                .Where(entry => config.ShowCollected || !entry.Collected)
-                .Where(entry => search.Length == 0 ||
-                                entry.Name.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0)
-                .ToList();
-            var allSelected = candidates.Count > 0 && candidates.All(entry => entry.Selected);
-
-            var checkboxSize = OmniTheme.Scale(14f);
-            ImGui.SameLine(ImGui.GetContentRegionMax().X - checkboxSize - OmniTheme.Scale(2f));
-            ImGui.SetCursorPosX(ImGui.GetContentRegionMax().X - checkboxSize - OmniTheme.Scale(2f));
-            ImGui.SetCursorPosY(ImGui.GetCursorPosY() + OmniTheme.Scale(3f));
-            using (ImRaii.Disabled(candidates.Count == 0))
-            {
-                if (DrawSmallCheckbox("##selectSection" + id, allSelected, checkboxSize))
-                {
-                    SelectSection(entries, special, !allSelected);
-                }
-            }
-
-            if (ImGui.IsItemHovered())
-            {
-                OmniControls.HelpTooltip(Text("SelectAll"), true);
-            }
-
-            return open;
+            open = !open;
         }
+
+        var drawList = ImGui.GetWindowDrawList();
+        var accent = ImGui.ColorConvertFloat4ToU32(OmniTheme.ControlAccent);
+        var arrowTop = centerY - OmniTheme.Scale(5f);
+        var arrowBottom = centerY + OmniTheme.Scale(5f);
+        if (open)
+        {
+            drawList.AddTriangleFilled(
+                new Vector2(startX, arrowTop),
+                new Vector2(startX + arrowWidth, centerY),
+                new Vector2(startX, arrowBottom),
+                accent);
+        }
+        else
+        {
+            drawList.AddTriangleFilled(
+                new Vector2(startX, arrowTop),
+                new Vector2(startX, arrowBottom),
+                new Vector2(startX + arrowWidth, centerY),
+                accent);
+        }
+
+        ImGui.SetWindowFontScale(1.15f);
+        ImGui.SetCursorScreenPos(new Vector2(startX + arrowWidth + spacing, centerY - textHeight * 1.15f * 0.5f));
+        ImGui.TextColored(OmniTheme.ControlAccent, label);
+        ImGui.SetWindowFontScale(1f);
+
+        ImGui.SetCursorScreenPos(new Vector2(
+            startX + arrowWidth + spacing + textWidth + spacing,
+            centerY - checkboxSize * 0.5f));
+        using (ImRaii.Disabled(candidates.Count == 0))
+        {
+            if (DrawSmallCheckbox("##selectSection" + id, allSelected, checkboxSize))
+            {
+                SelectSection(entries, special, !allSelected);
+            }
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            OmniControls.HelpTooltip(Text("SelectAll"), true);
+        }
+
+        ImGui.SetCursorScreenPos(new Vector2(startPosition.X, startPosition.Y + rowHeight));
+        return open;
     }
 
     private void SelectSection(List<GatheringEntry> entries, bool special, bool select)
