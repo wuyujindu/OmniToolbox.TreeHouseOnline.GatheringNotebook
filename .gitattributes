@@ -1,0 +1,4 @@
+# 源码按 LF 存储与检出；清单 SHA256 按 LF 内容计算
+*.cs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
