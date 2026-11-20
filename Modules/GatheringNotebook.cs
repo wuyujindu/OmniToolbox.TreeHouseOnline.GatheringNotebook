@@ -9,8 +9,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dalamud.Bindings.ImGui;
-using Dalamud.Game.Inventory;
-using Dalamud.Game.Inventory.InventoryEventArgTypes;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -65,9 +63,6 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["RefreshHelp"] = "重新读取采集笔记的完成情况",
             ["ShowCollected"] = "显示已采集",
             ["ShowCollectedHelp"] = "勾选后一并列出已经采集过的采集物",
-            ["AutoDiscard"] = "自动丢弃采集物",
-            ["AutoDiscardHelp"] = "开启后，采集到的图鉴物品会在采集窗口关闭后自动整叠丢弃（只丢新出现的整叠，背包里已有的同类物品不会动）；水晶类不丢弃；避开采集过程，不会打断 Ruri",
-            ["AutoDiscardOn"] = "自动丢弃已开启: 采集窗口关闭后丢弃新出现的整叠图鉴物品 (水晶除外)",
             ["SearchHint"] = "搜索采集物名称",
             ["Name"] = "名称",
             ["Level"] = "等级",
@@ -87,7 +82,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["RuriStart"] = "Ruri 立即采集",
             ["RuriStartHelp"] = "把选中的未采集物生成 Ruri 订单, 打开 Ruri 并直接开始采集",
             ["BatchStart"] = "分段采集",
-            ["BatchStartHelp"] = "按每组 N 件依次发送 Ruri 订单, 每组结束后丢弃该组对应的所有采集物; 请预留足够背包空位 (收藏品会采集多个并占用额外格子)",
+            ["BatchStartHelp"] = "按每组 N 件依次发送 Ruri 订单, 一组完成后自动发下一组; 请预留足够背包空位 (收藏品会采集多个并占用额外格子)",
             ["BatchStop"] = "停止分段",
             ["BatchSizeHelp"] = "每组发送给 Ruri 的订单件数 (1-50)",
             ["BatchNone"] = "没有可分段采集的未采集物品",
@@ -95,7 +90,7 @@ public sealed class GatheringNotebook : OmniModuleBase
             ["BatchBagHint"] = "请预留足够背包空位: 收藏品会采集多个并占用额外格子",
             ["BatchGroupStarted"] = "第 {0}/{1} 组已发送: {2} 件",
             ["BatchProgress"] = "第 {0}/{1} 组 · 剩 {2} 件",
-            ["BatchFinished"] = "分段采集完成: {0} 组, 丢弃 {1} 件",
+            ["BatchFinished"] = "分段采集完成: 共 {0} 组",
             ["BatchTimeout"] = "分段采集超时已停止, 本组还剩 {0} 件未采集",
             ["BatchStopped"] = "分段采集已停止",
             ["BatchNoGatherable"] = "选中的物品里没有 Ruri 可采集的项目",
@@ -132,17 +127,13 @@ public sealed class GatheringNotebook : OmniModuleBase
     private string selectedCategoryKey = string.Empty;
     private GatheringEntry? detailEntry;
     private string copiedPreset = string.Empty;
-    private readonly HashSet<uint> discardableItemIds = [];
-    private readonly List<PendingDiscard> pendingDiscards = [];
     private readonly HashSet<uint> collectedItemIds = [];
     private readonly List<List<uint>> batchGroups = [];
     private BatchPhase batchPhase;
     private int batchGroupIndex;
     private int batchCollectedInGroup;
-    private int batchDiscardedCount;
     private long batchPhaseSince;
     private long batchLastProgress;
-    private long batchLastInventoryChange;
     private long batchLastCollectedRefresh;
     private IGameGui? gameGui;
 
@@ -150,80 +141,16 @@ public sealed class GatheringNotebook : OmniModuleBase
     {
         None,
         Running,
-        Settling,
-        Discard
+        Settling
     }
-
-    private readonly record struct PendingDiscard(
-        GameInventoryType Container,
-        uint Slot,
-        uint ItemId,
-        long CreatedAt);
 
     public override bool HasSettings => true;
 
     protected override void OnStart(FeatureLifetime activation)
     {
         gameGui = DalamudServices.PluginInterface.GetService(typeof(IGameGui)) as IGameGui;
-        if (DalamudServices.PluginInterface.GetService(typeof(IGameInventory)) is IGameInventory gameInventory)
-        {
-            gameInventory.InventoryChangedRaw += OnInventoryChangedRaw;
-            activation.OnStopping(() => gameInventory.InventoryChangedRaw -= OnInventoryChangedRaw);
-        }
-
         DalamudServices.Framework.Update += OnFrameworkUpdate;
         activation.OnStopping(() => DalamudServices.Framework.Update -= OnFrameworkUpdate);
-    }
-
-    private void OnInventoryChangedRaw(IReadOnlyCollection<InventoryEventArgs> events)
-    {
-        if ((!config.AutoDiscardGathered && batchPhase == BatchPhase.None) ||
-            discardableItemIds.Count == 0 ||
-            !DalamudServices.PlayerState.IsLoaded)
-        {
-            return;
-        }
-
-        batchLastInventoryChange = Environment.TickCount64;
-        foreach (var args in events)
-        {
-            if (args.Item.ContainerType is not (GameInventoryType.Inventory1 or GameInventoryType.Inventory2 or
-                GameInventoryType.Inventory3 or GameInventoryType.Inventory4))
-            {
-                continue;
-            }
-
-            var item = args.Item;
-            if (item.ItemId == 0 || !discardableItemIds.Contains(item.ItemId))
-            {
-                continue;
-            }
-
-            var gained = args switch
-            {
-                InventoryItemAddedArgs => item.Quantity,
-                InventoryItemChangedArgs changed => item.Quantity - changed.OldItemState.Quantity,
-                _ => 0
-            };
-
-            // 只记录「这一叠全部是刚获得的」物品，避免连带删掉背包里原有的同类物品。
-            if (gained <= 0 || item.Quantity != gained)
-            {
-                continue;
-            }
-
-            // 先排队：采集过程中（Ruri 正在按背包数量计数）绝不丢，等分段结束/窗口关闭再处理。
-            if (pendingDiscards.Any(pending => pending.Container == item.ContainerType && pending.Slot == item.InventorySlot))
-            {
-                continue;
-            }
-
-            pendingDiscards.Add(new PendingDiscard(
-                item.ContainerType,
-                item.InventorySlot,
-                item.ItemId,
-                Environment.TickCount64));
-        }
     }
 
     private void OnFrameworkUpdate(IFramework framework)
@@ -231,53 +158,8 @@ public sealed class GatheringNotebook : OmniModuleBase
         if (batchPhase != BatchPhase.None)
         {
             UpdateBatch();
-            return;
         }
-
-        if (pendingDiscards.Count == 0 || !config.AutoDiscardGathered)
-        {
-            if (!config.AutoDiscardGathered)
-            {
-                pendingDiscards.Clear();
-            }
-
-            return;
-        }
-
-        // 采集窗口还开着（Ruri 正在采集/计数）时不丢。
-        if (IsGatheringWindowOpen())
-        {
-            return;
-        }
-
-        FlushPendingDiscards();
     }
-
-    private int FlushPendingDiscards()
-    {
-        var now = Environment.TickCount64;
-        var discarded = 0;
-        for (var index = pendingDiscards.Count - 1; index >= 0; index--)
-        {
-            var pending = pendingDiscards[index];
-            if (now - pending.CreatedAt < 500)
-            {
-                continue;
-            }
-
-            pendingDiscards.RemoveAt(index);
-            if (!DalamudServices.PlayerState.IsLoaded || !IsSlotStillHolding(pending))
-            {
-                continue;
-            }
-
-            DiscardItemSlot(pending);
-            discarded++;
-        }
-
-        return discarded;
-    }
-
     private void StartBatchGather()
     {
         if (catalog == null)
@@ -306,7 +188,6 @@ public sealed class GatheringNotebook : OmniModuleBase
         }
 
         batchGroupIndex = 0;
-        batchDiscardedCount = 0;
         DalamudServices.ChatGUI.Print(Text("BatchStarted", items.Count, batchGroups.Count, size));
         DalamudServices.ChatGUI.Print(Text("BatchBagHint"));
         SendBatchGroup();
@@ -318,7 +199,6 @@ public sealed class GatheringNotebook : OmniModuleBase
         batchPhase = BatchPhase.Running;
         batchPhaseSince = Environment.TickCount64;
         batchLastProgress = batchPhaseSince;
-        batchLastInventoryChange = batchPhaseSince;
         batchCollectedInGroup = CountCollectedInBatchGroup();
 
         var json = BuildRuriOrderJsonFromIds(ids);
@@ -371,90 +251,22 @@ public sealed class GatheringNotebook : OmniModuleBase
                 break;
 
             case BatchPhase.Settling:
-                // 等采集窗口关闭、背包安静下来，确认 Ruri 这一组已经结束。
-                if (IsGatheringWindowOpen() || now - batchLastInventoryChange < 3000)
+                // 等采集窗口关闭并稍等一会儿，确认 Ruri 这一组已经结束，再发下一组。
+                if (!IsGatheringWindowOpen() && now - batchPhaseSince > 3000)
                 {
-                    if (now - batchPhaseSince > 15_000)
+                    batchGroupIndex++;
+                    if (batchGroupIndex >= batchGroups.Count)
                     {
-                        batchPhase = BatchPhase.Discard;
-                        batchPhaseSince = now;
+                        FinishBatch();
                     }
-
-                    break;
-                }
-
-                batchPhase = BatchPhase.Discard;
-                batchPhaseSince = now;
-                break;
-
-            case BatchPhase.Discard:
-                // 再等 1 秒，避免 Ruri 还在收尾时被下一次订单打断。
-                if (now - batchPhaseSince < 1000)
-                {
-                    break;
-                }
-
-                // 本轮订单结束后，把这一组对应物品的背包格全部丢掉（本轮采集到的都清掉）。
-                batchDiscardedCount += DiscardBatchGroupItems();
-                pendingDiscards.Clear();
-                batchGroupIndex++;
-                if (batchGroupIndex >= batchGroups.Count)
-                {
-                    FinishBatch();
-                }
-                else
-                {
-                    SendBatchGroup();
+                    else
+                    {
+                        SendBatchGroup();
+                    }
                 }
 
                 break;
         }
-    }
-
-    private int DiscardBatchGroupItems()
-    {
-        if (batchGroupIndex >= batchGroups.Count)
-        {
-            return 0;
-        }
-
-        var ids = new HashSet<uint>(batchGroups[batchGroupIndex]);
-        var discarded = 0;
-        unsafe
-        {
-            var manager = InventoryManager.Instance();
-            if (manager == null)
-            {
-                return 0;
-            }
-
-            foreach (var type in new[]
-                     {
-                         InventoryType.Inventory1, InventoryType.Inventory2,
-                         InventoryType.Inventory3, InventoryType.Inventory4
-                     })
-            {
-                var container = manager->GetInventoryContainer(type);
-                if (container == null || container->Items == null)
-                {
-                    continue;
-                }
-
-                for (var index = 0; index < container->Size; index++)
-                {
-                    var item = container->Items + index;
-                    if (item->ItemId == 0 || !ids.Contains(item->ItemId))
-                    {
-                        continue;
-                    }
-
-                    manager->DiscardItem(type, (ushort)index);
-                    discarded++;
-                }
-            }
-        }
-
-        return discarded;
     }
 
     private int CountCollectedInBatchGroup()
@@ -469,11 +281,10 @@ public sealed class GatheringNotebook : OmniModuleBase
 
     private void FinishBatch()
     {
-        DalamudServices.ChatGUI.Print(Text("BatchFinished", batchGroups.Count, batchDiscardedCount));
+        DalamudServices.ChatGUI.Print(Text("BatchFinished", batchGroups.Count));
         batchPhase = BatchPhase.None;
         batchGroups.Clear();
         batchGroupIndex = 0;
-        pendingDiscards.Clear();
     }
 
     private void StopBatch(string message)
@@ -482,7 +293,6 @@ public sealed class GatheringNotebook : OmniModuleBase
         batchPhase = BatchPhase.None;
         batchGroups.Clear();
         batchGroupIndex = 0;
-        pendingDiscards.Clear();
     }
 
     private bool IsGatheringWindowOpen()
@@ -491,30 +301,6 @@ public sealed class GatheringNotebook : OmniModuleBase
         return gui != null &&
                (!gui.GetAddonByName("Gathering", 1).IsNull || !gui.GetAddonByName("GatheringMasterpiece", 1).IsNull);
     }
-
-    private static unsafe bool IsSlotStillHolding(PendingDiscard pending)
-    {
-        var manager = InventoryManager.Instance();
-        if (manager == null)
-        {
-            return false;
-        }
-
-        var slot = manager->GetInventorySlot((InventoryType)(int)pending.Container, (int)pending.Slot);
-        return slot != null && slot->ItemId == pending.ItemId;
-    }
-
-    private static unsafe void DiscardItemSlot(PendingDiscard pending)
-    {
-        var manager = InventoryManager.Instance();
-        if (manager == null)
-        {
-            return;
-        }
-
-        manager->DiscardItem((InventoryType)(int)pending.Container, (ushort)pending.Slot);
-    }
-
     public override bool DrawSettings()
     {
         if (!EnsureCatalog())
@@ -543,13 +329,12 @@ public sealed class GatheringNotebook : OmniModuleBase
 
     public override bool ResetSettings()
     {
-        if (!config.ShowCollected && !config.AutoDiscardGathered && config.BatchSize == 10)
+        if (!config.ShowCollected && config.BatchSize == 10)
         {
             return false;
         }
 
         config.ShowCollected = false;
-        config.AutoDiscardGathered = false;
         config.BatchSize = 10;
         return true;
     }
@@ -578,21 +363,6 @@ public sealed class GatheringNotebook : OmniModuleBase
 
         ImGui.SameLine(0f, OmniTheme.Scale(6f));
         OmniControls.HelpIcon(Text("ShowCollectedHelp"));
-
-        ImGui.SameLine(0f, OmniTheme.Scale(12f));
-        var autoDiscard = config.AutoDiscardGathered;
-        if (OmniControls.Checkbox(Text("AutoDiscard") + "##gatheringNotebookAutoDiscard", ref autoDiscard))
-        {
-            config.AutoDiscardGathered = autoDiscard;
-            changed = true;
-            if (autoDiscard)
-            {
-                DalamudServices.ChatGUI.Print(Text("AutoDiscardOn"));
-            }
-        }
-
-        ImGui.SameLine(0f, OmniTheme.Scale(6f));
-        OmniControls.HelpIcon(Text("AutoDiscardHelp"));
 
         ImGui.SameLine(0f, OmniTheme.Scale(12f));
         ImGui.SetNextItemWidth(OmniTheme.Scale(200f));
@@ -1680,15 +1450,6 @@ public sealed class GatheringNotebook : OmniModuleBase
         try
         {
             catalog = GatheringCatalog.Build();
-            discardableItemIds.Clear();
-            foreach (var entry in catalog.All)
-            {
-                if (!entry.IsCrystal)
-                {
-                    discardableItemIds.Add(entry.ItemId);
-                }
-            }
-
             catalogUnavailable = false;
             RefreshCollected();
             return true;
@@ -1753,7 +1514,6 @@ public sealed class GatheringNotebook : OmniModuleBase
     internal sealed class Settings
     {
         public bool ShowCollected { get; set; }
-        public bool AutoDiscardGathered { get; set; }
         public int BatchSize { get; set; } = 10;
     }
 
